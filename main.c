@@ -61,6 +61,10 @@
 #define RCC_APB1ENR_TIM3EN     (1U << 1)
 #define RCC_APB1ENR_USART2EN   (1U << 17)
 
+/* ---- Global context ----------------------------------------------------- */
+
+static volatile ventway_ctx_t g_ctx;
+
 /* ---- PWM ---------------------------------------------------------------- */
 
 static void pwm_set_duty(uint32_t pct)
@@ -120,12 +124,12 @@ static void tim2_tick_init(void)
 }
 
 /* Drain ring buffer to UART — call from main loop only */
-static void uart_flush(void)
+static void uart_flush(volatile ventway_ctx_t *ctx)
 {
-    while (tx_tail != tx_head) {
+    while (ctx->tx_tail != ctx->tx_head) {
         while (!(USART2_SR & (1U << 7)));  /* Wait for TXE */
-        USART2_DR = (uint32_t)tx_buf[tx_tail];
-        tx_tail = (tx_tail + 1) & (TX_BUF_SIZE - 1);
+        USART2_DR = (uint32_t)ctx->tx_buf[ctx->tx_tail];
+        ctx->tx_tail = (ctx->tx_tail + 1) & (TX_BUF_SIZE - 1);
     }
 }
 
@@ -134,8 +138,8 @@ static void uart_flush(void)
 void TIM2_IRQHandler(void)
 {
     TIM2_SR &= ~(1U << 0);  /* Clear UIF */
-    if (state_machine_tick())
-        pwm_set_duty(pwm_duty_pct);
+    if (state_machine_tick((ventway_ctx_t *)&g_ctx))
+        pwm_set_duty(g_ctx.duty_pct);
 }
 
 /* ---- Main --------------------------------------------------------------- */
@@ -146,14 +150,16 @@ int main(void)
     gpio_init();
     usart2_init();
     tim3_pwm_init();
+
+    ventway_init((ventway_ctx_t *)&g_ctx);
+    tx_puts((ventway_ctx_t *)&g_ctx, "Ventway starting\r\n");
+    enter_state((ventway_ctx_t *)&g_ctx, INHALE);
+    pwm_set_duty(g_ctx.duty_pct);
+
     tim2_tick_init();
 
-    tx_puts("Ventway starting\r\n");
-    enter_state(INHALE);
-    pwm_set_duty(pwm_duty_pct);
-
     while (1) {
-        uart_flush();
+        uart_flush(&g_ctx);
         __asm volatile ("wfi");
     }
 }

@@ -11,7 +11,7 @@ CFLAGS   = -mcpu=cortex-m4 -mthumb -mfloat-abi=soft \
 
 LDFLAGS  = -T linker.ld -nostdlib -Wl,--gc-sections
 
-SRCS     = startup.c main.c
+SRCS     = startup.c ventway.c main.c
 OBJS     = $(addprefix $(BUILD)/,$(SRCS:.c=.o))
 
 .PHONY: all clean renode test
@@ -37,8 +37,8 @@ clean:
 test: $(BUILD)/test_ventway
 	./$(BUILD)/test_ventway
 
-$(BUILD)/test_ventway: test_ventway.c ventway.h | $(BUILD)
-	cc -std=c99 -Wall -Wextra -g -o $@ $<
+$(BUILD)/test_ventway: test_ventway.c ventway.c ventway.h | $(BUILD)
+	cc -std=c99 -Wall -Wextra -g -o $@ test_ventway.c ventway.c
 
 renode:
 	renode ventway.resc
