@@ -57,9 +57,15 @@
 
 #define SYS_CLK         16000000U   /* HSI = 16 MHz (default after reset) */
 
+/* RCC bit positions */
+#define RCC_AHB1ENR_GPIOAEN    (1U << 0)
+#define RCC_APB1ENR_TIM2EN     (1U << 0)
+#define RCC_APB1ENR_TIM3EN     (1U << 1)
+#define RCC_APB1ENR_USART2EN   (1U << 17)
+
 typedef enum { INHALE, HOLD, EXHALE } state_t;
 
-static const char *state_names[] = { "INHALE", "HOLD", "EXHALE" };
+static const char *const state_names[] = { "INHALE", "HOLD", "EXHALE" };
 
 /* Duration of each state in milliseconds */
 static const uint32_t state_duration_ms[] = {
@@ -84,27 +90,35 @@ static volatile uint32_t state_ticks  = 0;  /* ticks remaining in state */
 
 #define TICK_MS 10  /* TIM2 fires every 10 ms */
 
-/* ---- UART --------------------------------------------------------------- */
+/* ---- TX ring buffer ----------------------------------------------------- */
 
-static void uart_putc(char c)
+#define TX_BUF_SIZE 128  /* must be power of 2 */
+static volatile char    tx_buf[TX_BUF_SIZE];
+static volatile uint32_t tx_head;  /* written by producer (ISR or main) */
+static volatile uint32_t tx_tail;  /* read by consumer (uart_flush)     */
+
+static void tx_put(char c)
 {
-    while (!(USART2_SR & (1 << 7)));  /* Wait for TXE */
-    USART2_DR = (uint32_t)c;
+    uint32_t next = (tx_head + 1) & (TX_BUF_SIZE - 1);
+    if (next == tx_tail)
+        return;  /* buffer full — drop character */
+    tx_buf[tx_head] = c;
+    tx_head = next;
 }
 
-static void uart_puts(const char *s)
+static void tx_puts(const char *s)
 {
     while (*s)
-        uart_putc(*s++);
+        tx_put(*s++);
 }
 
-static void uart_put_uint(uint32_t n)
+static void tx_put_uint(uint32_t n)
 {
-    char buf[10];
+    char buf[11];
     int i = 0;
 
     if (n == 0) {
-        uart_putc('0');
+        tx_put('0');
         return;
     }
     while (n > 0) {
@@ -112,7 +126,17 @@ static void uart_put_uint(uint32_t n)
         n /= 10;
     }
     while (i--)
-        uart_putc(buf[i]);
+        tx_put(buf[i]);
+}
+
+/* Drain ring buffer to UART — call from main loop only */
+static void uart_flush(void)
+{
+    while (tx_tail != tx_head) {
+        while (!(USART2_SR & (1U << 7)));  /* Wait for TXE */
+        USART2_DR = (uint32_t)tx_buf[tx_tail];
+        tx_tail = (tx_tail + 1) & (TX_BUF_SIZE - 1);
+    }
 }
 
 /* ---- PWM ---------------------------------------------------------------- */
@@ -128,9 +152,8 @@ static void pwm_set_duty(uint32_t pct)
 static void clock_init(void)
 {
     /* Enable GPIOA, TIM2, TIM3, USART2 clocks */
-    RCC_AHB1ENR |= (1 << 0);                   /* GPIOA */
-    RCC_APB1ENR |= (1 << 0) | (1 << 1) | (1 << 17);
-    /*              TIM2        TIM3        USART2    */
+    RCC_AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    RCC_APB1ENR |= RCC_APB1ENR_TIM2EN | RCC_APB1ENR_TIM3EN | RCC_APB1ENR_USART2EN;
 }
 
 static void gpio_init(void)
@@ -202,13 +225,13 @@ static void enter_state(state_t s)
     if (s == INHALE)
         cycle_count++;
 
-    uart_puts("[cycle ");
-    uart_put_uint(cycle_count);
-    uart_puts("] ");
-    uart_puts(state_names[s]);
-    uart_puts(" — duty ");
-    uart_put_uint(state_duty_pct[s]);
-    uart_puts("%\r\n");
+    tx_puts("[cycle ");
+    tx_put_uint(cycle_count);
+    tx_puts("] ");
+    tx_puts(state_names[s]);
+    tx_puts(" — duty ");
+    tx_put_uint(state_duty_pct[s]);
+    tx_puts("%\r\n");
 }
 
 void TIM2_IRQHandler(void)
@@ -239,11 +262,11 @@ int main(void)
     tim3_pwm_init();
     tim2_tick_init();
 
-    uart_puts("Ventway starting\r\n");
+    tx_puts("Ventway starting\r\n");
     enter_state(INHALE);
 
     while (1) {
-        /* CPU idles; state machine runs in interrupt context */
+        uart_flush();
         __asm volatile ("wfi");
     }
 }
