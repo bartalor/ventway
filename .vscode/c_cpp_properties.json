@@ -1,0 +1,16 @@
+{
+    "configurations": [
+        {
+            "name": "STM32F407",
+            "compilerPath": "/usr/bin/arm-none-eabi-gcc",
+            "compilerArgs": [
+                "-mcpu=cortex-m4",
+                "-mthumb",
+                "-mfloat-abi=soft"
+            ],
+            "intelliSenseMode": "gcc-arm",
+            "cStandard": "c99"
+        }
+    ],
+    "version": 4
+}

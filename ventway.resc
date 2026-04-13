@@ -1,0 +1,14 @@
+### Renode script for Ventway ventilator simulator
+### Usage: renode ventway.resc
+
+using sysbus
+
+mach create "ventway"
+machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
+
+sysbus LoadELF @ventway.elf
+
+# Show UART2 output in the Renode console
+showAnalyzer sysbus.usart2
+
+start
