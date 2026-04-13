@@ -6,7 +6,7 @@ using sysbus
 mach create "ventway"
 machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
 
-sysbus LoadELF @ventway.elf
+sysbus LoadELF @build/ventway.elf
 
 # Show UART2 output in the Renode console
 showAnalyzer sysbus.usart2

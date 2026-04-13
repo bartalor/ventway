@@ -1,34 +1,38 @@
-TARGET  = ventway
-CC      = arm-none-eabi-gcc
-OBJCOPY = arm-none-eabi-objcopy
-SIZE    = arm-none-eabi-size
+TARGET   = ventway
+BUILD    = build
+CC       = arm-none-eabi-gcc
+OBJCOPY  = arm-none-eabi-objcopy
+SIZE     = arm-none-eabi-size
 
-CFLAGS  = -mcpu=cortex-m4 -mthumb -mfloat-abi=soft \
-          -std=c99 -Wall -Wextra -Os -g \
-          -fno-common -ffunction-sections -fdata-sections \
-          -ffreestanding -nostdlib
+CFLAGS   = -mcpu=cortex-m4 -mthumb -mfloat-abi=soft \
+           -std=c99 -Wall -Wextra -Os -g \
+           -fno-common -ffunction-sections -fdata-sections \
+           -ffreestanding -nostdlib
 
-LDFLAGS = -T linker.ld -nostdlib -Wl,--gc-sections
+LDFLAGS  = -T linker.ld -nostdlib -Wl,--gc-sections
 
-SRCS    = startup.c main.c
-OBJS    = $(SRCS:.c=.o)
+SRCS     = startup.c main.c
+OBJS     = $(addprefix $(BUILD)/,$(SRCS:.c=.o))
 
-.PHONY: all clean flash renode
+.PHONY: all clean renode
 
-all: $(TARGET).bin
-	$(SIZE) $(TARGET).elf
+all: $(BUILD)/$(TARGET).bin
+	$(SIZE) $(BUILD)/$(TARGET).elf
 
-$(TARGET).elf: $(OBJS)
+$(BUILD)/$(TARGET).elf: $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
-$(TARGET).bin: $(TARGET).elf
+$(BUILD)/$(TARGET).bin: $(BUILD)/$(TARGET).elf
 	$(OBJCOPY) -O binary $< $@
 
-%.o: %.c
+$(BUILD)/%.o: %.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(BUILD):
+	mkdir -p $(BUILD)
+
 clean:
-	rm -f $(OBJS) $(TARGET).elf $(TARGET).bin
+	rm -rf $(BUILD)
 
 renode:
 	renode ventway.resc
