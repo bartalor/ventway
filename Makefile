@@ -14,7 +14,7 @@ LDFLAGS  = -T linker.ld -nostdlib -Wl,--gc-sections
 SRCS     = startup.c main.c
 OBJS     = $(addprefix $(BUILD)/,$(SRCS:.c=.o))
 
-.PHONY: all clean renode
+.PHONY: all clean renode test
 
 all: $(BUILD)/$(TARGET).bin
 	$(SIZE) $(BUILD)/$(TARGET).elf
@@ -33,6 +33,12 @@ $(BUILD):
 
 clean:
 	rm -rf $(BUILD)
+
+test: $(BUILD)/test_ventway
+	./$(BUILD)/test_ventway
+
+$(BUILD)/test_ventway: test_ventway.c ventway.h | $(BUILD)
+	cc -std=c99 -Wall -Wextra -g -o $@ $<
 
 renode:
 	renode ventway.resc
