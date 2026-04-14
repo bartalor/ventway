@@ -14,9 +14,31 @@
 
 #define SYS_CLK         16000000U
 #define TICK_MS         10U
-#define TX_BUF_SIZE     128U  /* must be power of 2 */
+#define TX_BUF_SIZE     256U  /* must be power of 2 */
 #define RX_BUF_SIZE     64U   /* must be power of 2 */
-#define CMD_BUF_SIZE    32U
+#define CMD_BUF_SIZE    64U
+
+/* ---- Fixed-point Q16.16 ------------------------------------------------- */
+
+typedef int32_t fp16_t;
+
+#define FP_SHIFT        16
+#define FP_ONE          (1 << FP_SHIFT)
+#define FP_FROM_INT(x)  ((fp16_t)((int32_t)(x) * FP_ONE))
+#define FP_TO_INT(x)    ((x) >> FP_SHIFT)
+
+static inline fp16_t fp_mul(fp16_t a, fp16_t b)
+{
+    return (fp16_t)(((int64_t)a * b) >> FP_SHIFT);
+}
+
+static inline fp16_t fp_div(fp16_t a, fp16_t b)
+{
+    return (fp16_t)(((int64_t)a << FP_SHIFT) / b);
+}
+
+/* dt = 10ms = 0.01s in Q16.16 */
+#define DT_FP           (FP_ONE / 100)
 
 /* ---- State machine types ------------------------------------------------ */
 
@@ -29,8 +51,7 @@ typedef enum {
 
 extern const char *const state_names[STATE_COUNT];
 extern const uint32_t    state_duration_ms[STATE_COUNT];
-extern const uint32_t    state_duty_start[STATE_COUNT];
-extern const uint32_t    state_duty_end[STATE_COUNT];
+extern const fp16_t      default_pressure_target[STATE_COUNT];
 
 /* ---- Context struct ----------------------------------------------------- */
 
@@ -49,19 +70,38 @@ typedef struct {
     char     cmd_buf[CMD_BUF_SIZE];
     uint32_t cmd_len;
 
-    /* Per-instance configuration (copied from defaults at init) */
+    /* Per-instance timing configuration (copied from defaults at init) */
     uint32_t duration_ms[STATE_COUNT];
-    uint32_t duty_start[STATE_COUNT];
-    uint32_t duty_end[STATE_COUNT];
+
+    /* Per-state pressure targets in cmH2O (Q16.16) */
+    fp16_t   pressure_target[STATE_COUNT];
+
+    /* Lung model state */
+    fp16_t   lung_volume;       /* mL (Q16.16) */
+    fp16_t   pressure;          /* airway pressure, cmH2O (Q16.16) */
+
+    /* Lung parameters (tunable) */
+    fp16_t   compliance;        /* mL/cmH2O (Q16.16), default 50 */
+    fp16_t   resistance;        /* cmH2O/(L/s) (Q16.16), default 5 */
+    fp16_t   k_turb;            /* flow gain: (mL/s) per %duty (Q16.16), default 10 */
+
+    /* PID controller state */
+    fp16_t   pid_integral;
+    fp16_t   pid_prev_meas;     /* previous pressure measurement (derivative-on-measurement) */
+
+    /* PID gains (tunable) */
+    fp16_t   kp;
+    fp16_t   ki;
+    fp16_t   kd;
+    fp16_t   kb;                /* anti-windup back-calculation gain */
 
     /* State machine */
     state_t  state;
     uint32_t cycle_count;
     uint32_t tick_count;
     uint32_t state_ticks;
-    uint32_t state_total_ticks;  /* total ticks for current state (for interpolation) */
     uint32_t duty_pct;
-    uint32_t state_changed;  /* flag: ISR sets, main loop clears after logging */
+    uint32_t state_changed;     /* flag: ISR sets, main loop clears after logging */
 } ventway_ctx_t;
 
 /* ---- TX buffer API ------------------------------------------------------ */
@@ -70,6 +110,7 @@ void     ventway_init(ventway_ctx_t *ctx);
 void     tx_put(ventway_ctx_t *ctx, char c);
 void     tx_puts(ventway_ctx_t *ctx, const char *s);
 void     tx_put_uint(ventway_ctx_t *ctx, uint32_t n);
+void     tx_put_fp(ventway_ctx_t *ctx, fp16_t val, int decimals);
 uint32_t tx_read(ventway_ctx_t *ctx, char *dst, uint32_t max_len);
 
 /* ---- RX buffer API ------------------------------------------------------ */
@@ -81,6 +122,11 @@ int  rx_get(ventway_ctx_t *ctx, char *out);
 
 void cmd_process_byte(ventway_ctx_t *ctx, char c);
 void cmd_execute(ventway_ctx_t *ctx);
+
+/* ---- Lung model and PID API --------------------------------------------- */
+
+void lung_model_tick(ventway_ctx_t *ctx);
+void pid_tick(ventway_ctx_t *ctx);
 
 /* ---- State machine API -------------------------------------------------- */
 

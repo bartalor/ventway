@@ -20,7 +20,7 @@ all: $(BUILD)/$(TARGET).bin
 	$(SIZE) $(BUILD)/$(TARGET).elf
 
 $(BUILD)/$(TARGET).elf: $(OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ -lgcc
 
 $(BUILD)/$(TARGET).bin: $(BUILD)/$(TARGET).elf
 	$(OBJCOPY) -O binary $< $@

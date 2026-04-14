@@ -2,14 +2,14 @@
  * Ventway — Bare metal STM32F407 ventilator breathing cycle simulator
  *
  * State machine: INHALE -> HOLD -> EXHALE -> INHALE ...
- * TIM2 interrupt drives state transitions.
+ * TIM2 interrupt drives 10ms tick — PID + lung model per tick.
  * TIM3 CH1 (PA6) outputs PWM for simulated turbine.
- * USART2 (PA2 TX) logs state and cycle count.
+ * USART2 (PA2 TX/RX) logs state and accepts runtime commands.
  *
- * Timing at ~20 breaths/min (3s cycle):
- *   INHALE: 1.0s   — turbine at 80% duty
- *   HOLD:   0.5s   — turbine at 30% duty
- *   EXHALE: 1.5s   — turbine off (0%)
+ * Closed-loop PCV at ~20 breaths/min (3s cycle):
+ *   INHALE: 1.0s   — PID targets 20 cmH2O inspiratory pressure
+ *   HOLD:   0.5s   — PID holds 20 cmH2O plateau
+ *   EXHALE: 1.5s   — passive exhale, PEEP valve at 5 cmH2O
  */
 
 #include "ventway.h"

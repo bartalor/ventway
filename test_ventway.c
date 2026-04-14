@@ -1,5 +1,5 @@
 /*
- * test_ventway.c — Native host tests for ventway state machine and TX buffer
+ * test_ventway.c — Native host tests for ventway state machine, PID, and lung model
  *
  * Build:  make test
  * Run:    ./build/test_ventway
@@ -19,7 +19,7 @@ static int tests_passed = 0;
 #define TEST(name) static void name(void)
 #define RUN(name) do {                                      \
     tests_run++;                                            \
-    printf("  %-50s", #name);                               \
+    printf("  %-55s", #name);                               \
     name();                                                 \
     tests_passed++;                                         \
     printf("PASS\n");                                       \
@@ -47,6 +47,21 @@ static int tests_passed = 0;
                __FILE__, __LINE__, (s), (expected));        \
         exit(1);                                            \
     }                                                       \
+} while (0)
+
+/* Assert fixed-point value is within tolerance of expected integer */
+#define ASSERT_FP_NEAR(val, expected_int, tolerance_int) do {   \
+    fp16_t _v = (val);                                          \
+    fp16_t _lo = FP_FROM_INT((expected_int) - (tolerance_int)); \
+    fp16_t _hi = FP_FROM_INT((expected_int) + (tolerance_int)); \
+    if (_v < _lo || _v > _hi) {                                 \
+        printf("FAIL\n    %s:%d: %s = %d.%02d, expected %d +/- %d\n", \
+               __FILE__, __LINE__, #val,                        \
+               (int)(_v >> FP_SHIFT),                           \
+               (int)(((_v & (FP_ONE-1)) * 100) >> FP_SHIFT),   \
+               (expected_int), (tolerance_int));                \
+        exit(1);                                                \
+    }                                                           \
 } while (0)
 
 /* ---- TX buffer tests ---------------------------------------------------- */
@@ -131,6 +146,70 @@ TEST(test_tx_reset_clears_buffer)
     ASSERT_STR(out, "");
 }
 
+/* ---- Fixed-point math tests --------------------------------------------- */
+
+TEST(test_fp_mul_basic)
+{
+    fp16_t a = FP_FROM_INT(3);
+    fp16_t b = FP_FROM_INT(4);
+    ASSERT_EQ(fp_mul(a, b), FP_FROM_INT(12));
+}
+
+TEST(test_fp_mul_fractional)
+{
+    fp16_t half = FP_ONE / 2;
+    fp16_t result = fp_mul(half, half);
+    /* 0.5 * 0.5 = 0.25 = FP_ONE/4 */
+    ASSERT_EQ(result, FP_ONE / 4);
+}
+
+TEST(test_fp_div_basic)
+{
+    fp16_t a = FP_FROM_INT(10);
+    fp16_t b = FP_FROM_INT(2);
+    ASSERT_EQ(fp_div(a, b), FP_FROM_INT(5));
+}
+
+TEST(test_fp_div_fractional)
+{
+    fp16_t a = FP_FROM_INT(1);
+    fp16_t b = FP_FROM_INT(3);
+    fp16_t result = fp_div(a, b);
+    /* 1/3 ≈ 0.333... Should be close to FP_ONE/3 */
+    fp16_t expected = FP_ONE / 3;
+    int32_t diff = result - expected;
+    if (diff < 0) diff = -diff;
+    ASSERT(diff <= 1);  /* rounding tolerance */
+}
+
+TEST(test_fp_negative)
+{
+    fp16_t a = FP_FROM_INT(-5);
+    fp16_t b = FP_FROM_INT(3);
+    fp16_t result = fp_mul(a, b);
+    ASSERT_EQ(result, FP_FROM_INT(-15));
+}
+
+TEST(test_tx_put_fp)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    tx_put_fp(&ctx, FP_FROM_INT(12) + FP_ONE / 2, 1);  /* 12.5 */
+    char out[16];
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT_STR(out, "12.5");
+}
+
+TEST(test_tx_put_fp_negative)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    tx_put_fp(&ctx, FP_FROM_INT(-3), 0);
+    char out[16];
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT_STR(out, "-3");
+}
+
 /* ---- State machine constants tests -------------------------------------- */
 
 TEST(test_state_names)
@@ -155,14 +234,11 @@ TEST(test_total_cycle_duration)
     ASSERT_EQ(total, 3000);  /* 3s = 20 breaths/min */
 }
 
-TEST(test_state_duty_ramps)
+TEST(test_default_pressure_targets)
 {
-    ASSERT_EQ(state_duty_start[INHALE],  0);
-    ASSERT_EQ(state_duty_end[INHALE],   80);
-    ASSERT_EQ(state_duty_start[HOLD],   80);
-    ASSERT_EQ(state_duty_end[HOLD],     80);
-    ASSERT_EQ(state_duty_start[EXHALE], 80);
-    ASSERT_EQ(state_duty_end[EXHALE],    0);
+    ASSERT_EQ(default_pressure_target[INHALE], FP_FROM_INT(20));
+    ASSERT_EQ(default_pressure_target[HOLD],   FP_FROM_INT(20));
+    ASSERT_EQ(default_pressure_target[EXHALE], FP_FROM_INT(5));
 }
 
 /* ---- Runtime configuration tests ---------------------------------------- */
@@ -176,16 +252,36 @@ TEST(test_init_copies_default_durations)
     ASSERT_EQ(ctx.duration_ms[EXHALE], 1500);
 }
 
-TEST(test_init_copies_default_duty_ramps)
+TEST(test_init_copies_default_pressure_targets)
 {
     ventway_ctx_t ctx;
     ventway_init(&ctx);
-    ASSERT_EQ(ctx.duty_start[INHALE],  0);
-    ASSERT_EQ(ctx.duty_end[INHALE],   80);
-    ASSERT_EQ(ctx.duty_start[HOLD],   80);
-    ASSERT_EQ(ctx.duty_end[HOLD],     80);
-    ASSERT_EQ(ctx.duty_start[EXHALE], 80);
-    ASSERT_EQ(ctx.duty_end[EXHALE],    0);
+    ASSERT_EQ(ctx.pressure_target[INHALE], FP_FROM_INT(20));
+    ASSERT_EQ(ctx.pressure_target[HOLD],   FP_FROM_INT(20));
+    ASSERT_EQ(ctx.pressure_target[EXHALE], FP_FROM_INT(5));
+}
+
+TEST(test_init_lung_defaults)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ASSERT_EQ(ctx.compliance, FP_FROM_INT(50));
+    ASSERT_EQ(ctx.resistance, FP_FROM_INT(5));
+    ASSERT_EQ(ctx.k_turb,    FP_FROM_INT(10));
+    ASSERT_EQ(ctx.lung_volume, 0);
+    ASSERT_EQ(ctx.pressure, 0);
+}
+
+TEST(test_init_pid_defaults)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ASSERT_EQ(ctx.kp, FP_FROM_INT(3));
+    ASSERT_EQ(ctx.ki, FP_ONE);
+    ASSERT_EQ(ctx.kd, FP_ONE / 10);
+    ASSERT_EQ(ctx.kb, FP_FROM_INT(2));
+    ASSERT_EQ(ctx.pid_integral, 0);
+    ASSERT_EQ(ctx.pid_prev_meas, 0);
 }
 
 TEST(test_custom_duration_applied)
@@ -195,15 +291,6 @@ TEST(test_custom_duration_applied)
     ctx.duration_ms[INHALE] = 2000;
     enter_state(&ctx, INHALE);
     ASSERT_EQ(ctx.state_ticks, 2000 / TICK_MS);
-}
-
-TEST(test_custom_duty_start_applied)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    ctx.duty_start[HOLD] = 50;
-    enter_state(&ctx, HOLD);
-    ASSERT_EQ(ctx.duty_pct, 50);
 }
 
 /* ---- enter_state tests -------------------------------------------------- */
@@ -216,7 +303,6 @@ TEST(test_enter_state_inhale)
 
     ASSERT_EQ(ctx.state, INHALE);
     ASSERT_EQ(ctx.state_ticks, 1000 / TICK_MS);
-    ASSERT_EQ(ctx.duty_pct, 0);   /* starts at duty_start (ramp up from 0) */
     ASSERT_EQ(ctx.cycle_count, 1);  /* INHALE increments cycle */
     ASSERT_EQ(ctx.state_changed, 1);
 }
@@ -229,7 +315,6 @@ TEST(test_enter_state_hold)
 
     ASSERT_EQ(ctx.state, HOLD);
     ASSERT_EQ(ctx.state_ticks, 500 / TICK_MS);
-    ASSERT_EQ(ctx.duty_pct, 80);  /* starts at duty_start (flat 80) */
     ASSERT_EQ(ctx.cycle_count, 0);  /* HOLD does not increment */
 }
 
@@ -241,8 +326,37 @@ TEST(test_enter_state_exhale)
 
     ASSERT_EQ(ctx.state, EXHALE);
     ASSERT_EQ(ctx.state_ticks, 1500 / TICK_MS);
-    ASSERT_EQ(ctx.duty_pct, 80);  /* starts at duty_start (ramp down from 80) */
     ASSERT_EQ(ctx.cycle_count, 0);  /* EXHALE does not increment */
+    ASSERT_EQ(ctx.pid_integral, 0);  /* integrator reset on exhale */
+    ASSERT_EQ(ctx.duty_pct, 0);     /* duty zeroed on exhale */
+}
+
+TEST(test_enter_state_inhale_resets_volume_to_peep)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ctx.lung_volume = FP_FROM_INT(500);  /* arbitrary */
+    enter_state(&ctx, INHALE);
+    /* Volume should reset to C * PEEP = 50 * 5 = 250 mL */
+    ASSERT_EQ(ctx.lung_volume, fp_mul(ctx.compliance, ctx.pressure_target[EXHALE]));
+}
+
+TEST(test_enter_state_exhale_resets_integrator)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ctx.pid_integral = FP_FROM_INT(42);
+    enter_state(&ctx, EXHALE);
+    ASSERT_EQ(ctx.pid_integral, 0);
+}
+
+TEST(test_enter_state_hold_preserves_integrator)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ctx.pid_integral = FP_FROM_INT(42);
+    enter_state(&ctx, HOLD);
+    ASSERT_EQ(ctx.pid_integral, FP_FROM_INT(42));
 }
 
 TEST(test_state_log_message)
@@ -255,10 +369,10 @@ TEST(test_state_log_message)
     ASSERT_EQ(ctx.state_changed, 0);  /* flag cleared */
     char out[TX_BUF_SIZE];
     tx_read(&ctx, out, sizeof(out));
-    /* Should contain cycle number, state name, and duty ramp */
+    /* Should contain cycle number, state name, and target pressure */
     ASSERT(strstr(out, "[cycle 1]") != NULL);
     ASSERT(strstr(out, "INHALE") != NULL);
-    ASSERT(strstr(out, "0%->80%") != NULL);
+    ASSERT(strstr(out, "target 20 cmH2O") != NULL);
 }
 
 TEST(test_state_log_noop_when_no_change)
@@ -280,7 +394,208 @@ TEST(test_enter_state_invalid_is_noop)
 
     ASSERT_EQ(ctx.state, INHALE);  /* unchanged from init */
     ASSERT_EQ(ctx.cycle_count, 0);
+}
+
+/* ---- Lung model tests --------------------------------------------------- */
+
+TEST(test_lung_zero_duty_zero_pressure)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+    ctx.duty_pct = 0;
+    ctx.lung_volume = fp_mul(ctx.compliance, ctx.pressure_target[EXHALE]);
+    lung_model_tick(&ctx);
+    /* With zero duty during inhale, no flow added; volume stays at PEEP level */
+    ASSERT_FP_NEAR(ctx.pressure, 5, 1);
+}
+
+TEST(test_lung_pressure_rises_with_duty)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+    ctx.lung_volume = fp_mul(ctx.compliance, ctx.pressure_target[EXHALE]);
+
+    /* Apply high duty for several ticks */
+    ctx.duty_pct = 80;
+    for (int i = 0; i < 50; i++)
+        lung_model_tick(&ctx);
+
+    /* Pressure should have risen above PEEP */
+    ASSERT(ctx.pressure > FP_FROM_INT(5));
+}
+
+TEST(test_lung_exhale_pressure_decays)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+
+    /* Set up some lung volume */
+    ctx.lung_volume = FP_FROM_INT(500);
+    enter_state(&ctx, EXHALE);
+
+    fp16_t initial_pressure = fp_div(ctx.lung_volume, ctx.compliance);
+
+    /* Tick exhale for a while */
+    for (int i = 0; i < 100; i++)
+        lung_model_tick(&ctx);
+
+    /* Pressure should have decreased toward PEEP */
+    ASSERT(ctx.pressure < initial_pressure);
+    ASSERT_FP_NEAR(ctx.pressure, 5, 2);  /* should be near PEEP */
+}
+
+TEST(test_lung_volume_clamped_at_max)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+    ctx.lung_volume = FP_FROM_INT(999);
+    ctx.duty_pct = 100;
+    lung_model_tick(&ctx);
+    ASSERT(ctx.lung_volume <= FP_FROM_INT(1000));
+}
+
+TEST(test_lung_peep_valve_clamp)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, EXHALE);
+    ctx.lung_volume = FP_FROM_INT(100);  /* low volume */
+
+    /* Tick many times — volume shouldn't drop below C*PEEP */
+    for (int i = 0; i < 500; i++)
+        lung_model_tick(&ctx);
+
+    fp16_t min_vol = fp_mul(ctx.compliance, ctx.pressure_target[EXHALE]);
+    ASSERT(ctx.lung_volume >= min_vol);
+}
+
+/* ---- PID controller tests ----------------------------------------------- */
+
+TEST(test_pid_positive_error_increases_duty)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+    ctx.pressure = 0;  /* target=20, error=+20 → duty should rise */
+    ctx.duty_pct = 0;
+
+    pid_tick(&ctx);
+
+    ASSERT(ctx.duty_pct > 0);
+}
+
+TEST(test_pid_clamp_max)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+    ctx.pressure = 0;            /* huge positive error */
+    ctx.kp = FP_FROM_INT(100);  /* very high gain */
+
+    pid_tick(&ctx);
+
+    ASSERT(ctx.duty_pct <= 100);
+}
+
+TEST(test_pid_clamp_min)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+    ctx.pressure = FP_FROM_INT(40);  /* way above target=20 → negative error */
+    ctx.kp = FP_FROM_INT(100);
+
+    pid_tick(&ctx);
+
     ASSERT_EQ(ctx.duty_pct, 0);
+}
+
+TEST(test_pid_anti_windup)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+    ctx.pressure = 0;  /* large error, output will saturate */
+
+    /* Run PID saturated for many ticks */
+    for (int i = 0; i < 200; i++)
+        pid_tick(&ctx);
+
+    /* Now set pressure above target — duty should drop quickly */
+    ctx.pressure = FP_FROM_INT(25);
+    for (int i = 0; i < 20; i++)
+        pid_tick(&ctx);
+
+    /* With anti-windup, integrator shouldn't hold duty high for long */
+    ASSERT(ctx.duty_pct < 50);
+}
+
+/* ---- Closed-loop integration tests -------------------------------------- */
+
+TEST(test_closed_loop_reaches_target)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+
+    /* Run full closed loop (PID + lung) for 2 seconds (200 ticks) */
+    for (int i = 0; i < 200; i++) {
+        pid_tick(&ctx);
+        lung_model_tick(&ctx);
+    }
+
+    /* Pressure should be near 20 cmH2O target */
+    ASSERT_FP_NEAR(ctx.pressure, 20, 3);
+}
+
+TEST(test_closed_loop_exhale_settles_to_peep)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+
+    /* First fill the lungs */
+    enter_state(&ctx, INHALE);
+    for (int i = 0; i < 100; i++) {
+        pid_tick(&ctx);
+        lung_model_tick(&ctx);
+    }
+
+    /* Now exhale */
+    enter_state(&ctx, EXHALE);
+    for (int i = 0; i < 300; i++) {
+        pid_tick(&ctx);
+        lung_model_tick(&ctx);
+    }
+
+    /* Pressure should settle near PEEP (5 cmH2O) */
+    ASSERT_FP_NEAR(ctx.pressure, 5, 2);
+}
+
+TEST(test_closed_loop_full_cycle)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+
+    /* Run through a complete cycle using state_machine_tick */
+    /* INHALE: 100 ticks + 1 transition */
+    for (int i = 0; i < 101; i++)
+        state_machine_tick(&ctx);
+    ASSERT_EQ(ctx.state, HOLD);
+
+    /* HOLD: 50 ticks + 1 transition */
+    for (int i = 0; i < 51; i++)
+        state_machine_tick(&ctx);
+    ASSERT_EQ(ctx.state, EXHALE);
+
+    /* EXHALE: 150 ticks + 1 transition */
+    for (int i = 0; i < 151; i++)
+        state_machine_tick(&ctx);
+    ASSERT_EQ(ctx.state, INHALE);
+    ASSERT_EQ(ctx.cycle_count, 2);
 }
 
 /* ---- State machine tick tests ------------------------------------------- */
@@ -319,55 +634,6 @@ TEST(test_tick_transition_returns_one)
     ASSERT_EQ(transitioned, 1);
 }
 
-TEST(test_full_cycle_inhale_hold_exhale_inhale)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, INHALE);
-    ASSERT_EQ(ctx.state, INHALE);
-    ASSERT_EQ(ctx.cycle_count, 1);
-
-    /* Tick through INHALE: state_ticks=100, need 100 to drain + 1 to transition */
-    for (int i = 0; i < 101; i++)
-        state_machine_tick(&ctx);
-
-    /* Should have transitioned to HOLD */
-    ASSERT_EQ(ctx.state, HOLD);
-    ASSERT_EQ(ctx.duty_pct, 80);  /* duty_start[HOLD] = 80 */
-
-    /* Tick through HOLD: state_ticks=50, need 51 */
-    for (int i = 0; i < 51; i++)
-        state_machine_tick(&ctx);
-
-    /* Should have transitioned to EXHALE */
-    ASSERT_EQ(ctx.state, EXHALE);
-    ASSERT_EQ(ctx.duty_pct, 80);  /* duty_start[EXHALE] = 80 */
-
-    /* Tick through EXHALE: state_ticks=150, need 151 */
-    for (int i = 0; i < 151; i++)
-        state_machine_tick(&ctx);
-
-    /* Should have transitioned back to INHALE */
-    ASSERT_EQ(ctx.state, INHALE);
-    ASSERT_EQ(ctx.duty_pct, 0);   /* duty_start[INHALE] = 0 */
-    ASSERT_EQ(ctx.cycle_count, 2);  /* second cycle */
-}
-
-TEST(test_multiple_cycles)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, INHALE);
-
-    /* Run 5 full cycles (303 ticks per cycle: 101+51+151) */
-    for (int c = 0; c < 5; c++)
-        for (int t = 0; t < 303; t++)
-            state_machine_tick(&ctx);
-
-    ASSERT_EQ(ctx.state, INHALE);
-    ASSERT_EQ(ctx.cycle_count, 6);  /* initial + 5 transitions back */
-}
-
 TEST(test_tick_count_increments)
 {
     ventway_ctx_t ctx;
@@ -379,51 +645,6 @@ TEST(test_tick_count_increments)
         state_machine_tick(&ctx);
 
     ASSERT_EQ(ctx.tick_count, before + 10);
-}
-
-/* ---- Interpolation tests ------------------------------------------------ */
-
-TEST(test_duty_ramps_up_during_inhale)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, INHALE);
-    ASSERT_EQ(ctx.duty_pct, 0);  /* start */
-
-    /* Tick halfway through INHALE (50 of 100 ticks) */
-    for (int i = 0; i < 50; i++)
-        state_machine_tick(&ctx);
-    ASSERT_EQ(ctx.duty_pct, 40);  /* halfway: 0 + (80-0)*50/100 = 40 */
-
-    /* Tick to end of INHALE */
-    for (int i = 0; i < 50; i++)
-        state_machine_tick(&ctx);
-    ASSERT_EQ(ctx.duty_pct, 80);  /* end: full ramp */
-}
-
-TEST(test_duty_ramps_down_during_exhale)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, EXHALE);
-    ASSERT_EQ(ctx.duty_pct, 80);  /* start */
-
-    /* Tick halfway through EXHALE (75 of 150 ticks) */
-    for (int i = 0; i < 75; i++)
-        state_machine_tick(&ctx);
-    ASSERT_EQ(ctx.duty_pct, 40);  /* halfway: 80 - (80-0)*75/150 = 40 */
-}
-
-TEST(test_duty_flat_during_hold)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, HOLD);
-    ASSERT_EQ(ctx.duty_pct, 80);
-
-    for (int i = 0; i < 25; i++)
-        state_machine_tick(&ctx);
-    ASSERT_EQ(ctx.duty_pct, 80);  /* flat: start == end */
 }
 
 /* ---- RX buffer tests ---------------------------------------------------- */
@@ -483,8 +704,9 @@ TEST(test_cmd_status)
     ASSERT(strstr(out, "INHALE") != NULL);
     ASSERT(strstr(out, "HOLD") != NULL);
     ASSERT(strstr(out, "EXHALE") != NULL);
-    ASSERT(strstr(out, "1000ms") != NULL);
-    ASSERT(strstr(out, "0%->80%") != NULL);
+    ASSERT(strstr(out, "target=20cmH2O") != NULL);
+    ASSERT(strstr(out, "compliance=50") != NULL);
+    ASSERT(strstr(out, "Kp=3.0") != NULL);
 }
 
 TEST(test_cmd_set_duration)
@@ -513,19 +735,83 @@ TEST(test_cmd_duration_not_multiple_of_tick)
     ASSERT(strstr(out, "must be multiple of") != NULL);
 }
 
-TEST(test_cmd_set_duty)
+TEST(test_cmd_set_target)
 {
     ventway_ctx_t ctx;
     ventway_init(&ctx);
     char out[TX_BUF_SIZE];
     tx_read(&ctx, out, sizeof(out));
 
-    feed_cmd(&ctx, "duty hold 40 60");
-    ASSERT_EQ(ctx.duty_start[HOLD], 40);
-    ASSERT_EQ(ctx.duty_end[HOLD], 60);
+    feed_cmd(&ctx, "target inhale 25");
+    ASSERT_EQ(ctx.pressure_target[INHALE], FP_FROM_INT(25));
     tx_read(&ctx, out, sizeof(out));
-    ASSERT(strstr(out, "40%") != NULL);
-    ASSERT(strstr(out, "60%") != NULL);
+    ASSERT(strstr(out, "25") != NULL);
+    ASSERT(strstr(out, "cmH2O") != NULL);
+}
+
+TEST(test_cmd_target_bad_state)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "target foo 25");
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "bad state") != NULL);
+}
+
+TEST(test_cmd_target_over_50)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "target inhale 51");
+    ASSERT_EQ(ctx.pressure_target[INHALE], FP_FROM_INT(20));  /* unchanged */
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "bad value") != NULL);
+}
+
+TEST(test_cmd_compliance)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "compliance 30");
+    ASSERT_EQ(ctx.compliance, FP_FROM_INT(30));
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "30") != NULL);
+}
+
+TEST(test_cmd_resistance)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "resistance 8");
+    ASSERT_EQ(ctx.resistance, FP_FROM_INT(8));
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "8") != NULL);
+}
+
+TEST(test_cmd_kp)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "kp 50");  /* 50 tenths = 5.0 */
+    fp16_t expected = (fp16_t)((int64_t)50 * FP_ONE / 10);
+    ASSERT_EQ(ctx.kp, expected);
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "5.0") != NULL);
 }
 
 TEST(test_cmd_bad_value)
@@ -579,19 +865,6 @@ TEST(test_cmd_overflow_value)
     ASSERT(strstr(out, "bad value") != NULL);
 }
 
-TEST(test_cmd_duty_over_100)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    char out[TX_BUF_SIZE];
-    tx_read(&ctx, out, sizeof(out));
-
-    feed_cmd(&ctx, "duty inhale 101 0");
-    ASSERT_EQ(ctx.duty_start[INHALE], 0);  /* unchanged */
-    tx_read(&ctx, out, sizeof(out));
-    ASSERT(strstr(out, "bad value") != NULL);
-}
-
 /* ---- Main --------------------------------------------------------------- */
 
 int main(void)
@@ -607,38 +880,62 @@ int main(void)
     RUN(test_tx_buffer_overflow_drops);
     RUN(test_tx_reset_clears_buffer);
 
+    printf("\nFixed-point math:\n");
+    RUN(test_fp_mul_basic);
+    RUN(test_fp_mul_fractional);
+    RUN(test_fp_div_basic);
+    RUN(test_fp_div_fractional);
+    RUN(test_fp_negative);
+    RUN(test_tx_put_fp);
+    RUN(test_tx_put_fp_negative);
+
     printf("\nState machine constants:\n");
     RUN(test_state_names);
     RUN(test_state_durations);
     RUN(test_total_cycle_duration);
-    RUN(test_state_duty_ramps);
+    RUN(test_default_pressure_targets);
 
     printf("\nRuntime configuration:\n");
     RUN(test_init_copies_default_durations);
-    RUN(test_init_copies_default_duty_ramps);
+    RUN(test_init_copies_default_pressure_targets);
+    RUN(test_init_lung_defaults);
+    RUN(test_init_pid_defaults);
     RUN(test_custom_duration_applied);
-    RUN(test_custom_duty_start_applied);
 
     printf("\nenter_state:\n");
     RUN(test_enter_state_inhale);
     RUN(test_enter_state_hold);
     RUN(test_enter_state_exhale);
+    RUN(test_enter_state_inhale_resets_volume_to_peep);
+    RUN(test_enter_state_exhale_resets_integrator);
+    RUN(test_enter_state_hold_preserves_integrator);
     RUN(test_state_log_message);
     RUN(test_state_log_noop_when_no_change);
     RUN(test_enter_state_invalid_is_noop);
+
+    printf("\nLung model:\n");
+    RUN(test_lung_zero_duty_zero_pressure);
+    RUN(test_lung_pressure_rises_with_duty);
+    RUN(test_lung_exhale_pressure_decays);
+    RUN(test_lung_volume_clamped_at_max);
+    RUN(test_lung_peep_valve_clamp);
+
+    printf("\nPID controller:\n");
+    RUN(test_pid_positive_error_increases_duty);
+    RUN(test_pid_clamp_max);
+    RUN(test_pid_clamp_min);
+    RUN(test_pid_anti_windup);
+
+    printf("\nClosed-loop integration:\n");
+    RUN(test_closed_loop_reaches_target);
+    RUN(test_closed_loop_exhale_settles_to_peep);
+    RUN(test_closed_loop_full_cycle);
 
     printf("\nState machine ticks:\n");
     RUN(test_tick_decrements_state_ticks);
     RUN(test_tick_no_transition_returns_zero);
     RUN(test_tick_transition_returns_one);
-    RUN(test_full_cycle_inhale_hold_exhale_inhale);
-    RUN(test_multiple_cycles);
     RUN(test_tick_count_increments);
-
-    printf("\nDuty interpolation:\n");
-    RUN(test_duty_ramps_up_during_inhale);
-    RUN(test_duty_ramps_down_during_exhale);
-    RUN(test_duty_flat_during_hold);
 
     printf("\nRX buffer:\n");
     RUN(test_rx_put_get);
@@ -649,12 +946,16 @@ int main(void)
     RUN(test_cmd_status);
     RUN(test_cmd_set_duration);
     RUN(test_cmd_duration_not_multiple_of_tick);
-    RUN(test_cmd_set_duty);
+    RUN(test_cmd_set_target);
+    RUN(test_cmd_target_bad_state);
+    RUN(test_cmd_target_over_50);
+    RUN(test_cmd_compliance);
+    RUN(test_cmd_resistance);
+    RUN(test_cmd_kp);
     RUN(test_cmd_bad_value);
     RUN(test_cmd_unknown);
     RUN(test_cmd_empty_line_ignored);
     RUN(test_cmd_overflow_value);
-    RUN(test_cmd_duty_over_100);
 
     printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
     return 0;
