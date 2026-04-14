@@ -49,6 +49,11 @@ void ventway_init(ventway_ctx_t *ctx)
     ctx->tick_count  = 0;
     ctx->state_ticks = 0;
     ctx->duty_pct    = 0;
+
+    for (int i = 0; i < STATE_COUNT; i++) {
+        ctx->duration_ms[i]  = state_duration_ms[i];
+        ctx->duty_pct_cfg[i] = state_duty_pct[i];
+    }
 }
 
 void tx_put(ventway_ctx_t *ctx, char c)
@@ -102,8 +107,8 @@ void enter_state(ventway_ctx_t *ctx, state_t s)
         return;
 
     ctx->state       = s;
-    ctx->state_ticks = state_duration_ms[s] / TICK_MS;
-    ctx->duty_pct    = state_duty_pct[s];
+    ctx->state_ticks = ctx->duration_ms[s] / TICK_MS;
+    ctx->duty_pct    = ctx->duty_pct_cfg[s];
 
     if (s == INHALE)
         ctx->cycle_count++;
@@ -113,7 +118,7 @@ void enter_state(ventway_ctx_t *ctx, state_t s)
     tx_puts(ctx, "] ");
     tx_puts(ctx, state_names[s]);
     tx_puts(ctx, " \xe2\x80\x94 duty ");
-    tx_put_uint(ctx, state_duty_pct[s]);
+    tx_put_uint(ctx, ctx->duty_pct_cfg[s]);
     tx_puts(ctx, "%\r\n");
 }
 

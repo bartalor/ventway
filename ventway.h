@@ -37,6 +37,10 @@ typedef struct {
     uint32_t tx_head;
     uint32_t tx_tail;
 
+    /* Per-instance configuration (copied from defaults at init) */
+    uint32_t duration_ms[STATE_COUNT];
+    uint32_t duty_pct_cfg[STATE_COUNT];
+
     /* State machine */
     state_t  state;
     uint32_t cycle_count;

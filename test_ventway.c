@@ -162,6 +162,44 @@ TEST(test_state_duty_cycles)
     ASSERT_EQ(state_duty_pct[EXHALE],  0);
 }
 
+/* ---- Runtime configuration tests ---------------------------------------- */
+
+TEST(test_init_copies_default_durations)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ASSERT_EQ(ctx.duration_ms[INHALE], 1000);
+    ASSERT_EQ(ctx.duration_ms[HOLD],    500);
+    ASSERT_EQ(ctx.duration_ms[EXHALE], 1500);
+}
+
+TEST(test_init_copies_default_duty_cycles)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ASSERT_EQ(ctx.duty_pct_cfg[INHALE], 80);
+    ASSERT_EQ(ctx.duty_pct_cfg[HOLD],   30);
+    ASSERT_EQ(ctx.duty_pct_cfg[EXHALE],  0);
+}
+
+TEST(test_custom_duration_applied)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ctx.duration_ms[INHALE] = 2000;
+    enter_state(&ctx, INHALE);
+    ASSERT_EQ(ctx.state_ticks, 2000 / TICK_MS);
+}
+
+TEST(test_custom_duty_applied)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ctx.duty_pct_cfg[HOLD] = 50;
+    enter_state(&ctx, HOLD);
+    ASSERT_EQ(ctx.duty_pct, 50);
+}
+
 /* ---- enter_state tests -------------------------------------------------- */
 
 TEST(test_enter_state_inhale)
@@ -343,6 +381,12 @@ int main(void)
     RUN(test_state_durations);
     RUN(test_total_cycle_duration);
     RUN(test_state_duty_cycles);
+
+    printf("\nRuntime configuration:\n");
+    RUN(test_init_copies_default_durations);
+    RUN(test_init_copies_default_duty_cycles);
+    RUN(test_custom_duration_applied);
+    RUN(test_custom_duty_applied);
 
     printf("\nenter_state:\n");
     RUN(test_enter_state_inhale);
