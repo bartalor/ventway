@@ -227,6 +227,12 @@ void cmd_execute(ventway_ctx_t *ctx)
             tx_puts(ctx, "bad value\r\n");
             return;
         }
+        if (val % TICK_MS != 0) {
+            tx_puts(ctx, "must be multiple of ");
+            tx_put_uint(ctx, TICK_MS);
+            tx_puts(ctx, "ms\r\n");
+            return;
+        }
         ctx->duration_ms[st] = val;
         tx_puts(ctx, state_names[st]);
         tx_puts(ctx, " = ");

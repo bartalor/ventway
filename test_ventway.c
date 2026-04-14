@@ -500,6 +500,19 @@ TEST(test_cmd_set_duration)
     ASSERT(strstr(out, "2000") != NULL);
 }
 
+TEST(test_cmd_duration_not_multiple_of_tick)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "inhale 15");
+    ASSERT_EQ(ctx.duration_ms[INHALE], 1000);  /* unchanged */
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "must be multiple of") != NULL);
+}
+
 TEST(test_cmd_set_duty)
 {
     ventway_ctx_t ctx;
@@ -635,6 +648,7 @@ int main(void)
     printf("\nCommand processing:\n");
     RUN(test_cmd_status);
     RUN(test_cmd_set_duration);
+    RUN(test_cmd_duration_not_multiple_of_tick);
     RUN(test_cmd_set_duty);
     RUN(test_cmd_bad_value);
     RUN(test_cmd_unknown);
