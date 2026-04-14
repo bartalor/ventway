@@ -65,6 +65,12 @@
 #define PA2                    2
 #define PA6                    6
 
+/* GPIO register field widths */
+#define MODER_BITS_PER_PIN     2
+#define MODER_MASK             3U
+#define AFRL_BITS_PER_PIN      4
+#define AFRL_MASK              0xFU
+
 /* GPIO modes (MODER register) */
 #define GPIO_MODE_AF           2U
 
@@ -95,16 +101,16 @@ static void clock_init(void)
 static void gpio_init(void)
 {
     /* PA2: AF mode for USART2 TX */
-    GPIOA_MODER &= ~(3U << (PA2 * 2));
-    GPIOA_MODER |=  (GPIO_MODE_AF << (PA2 * 2));
-    GPIOA_AFRL  &= ~(0xFU << (PA2 * 4));
-    GPIOA_AFRL  |=  (GPIO_AF7_USART2 << (PA2 * 4));
+    GPIOA_MODER &= ~(MODER_MASK << (PA2 * MODER_BITS_PER_PIN));
+    GPIOA_MODER |=  (GPIO_MODE_AF << (PA2 * MODER_BITS_PER_PIN));
+    GPIOA_AFRL  &= ~(AFRL_MASK << (PA2 * AFRL_BITS_PER_PIN));
+    GPIOA_AFRL  |=  (GPIO_AF7_USART2 << (PA2 * AFRL_BITS_PER_PIN));
 
     /* PA6: AF mode for TIM3 PWM */
-    GPIOA_MODER &= ~(3U << (PA6 * 2));
-    GPIOA_MODER |=  (GPIO_MODE_AF << (PA6 * 2));
-    GPIOA_AFRL  &= ~(0xFU << (PA6 * 4));
-    GPIOA_AFRL  |=  (GPIO_AF2_TIM3 << (PA6 * 4));
+    GPIOA_MODER &= ~(MODER_MASK << (PA6 * MODER_BITS_PER_PIN));
+    GPIOA_MODER |=  (GPIO_MODE_AF << (PA6 * MODER_BITS_PER_PIN));
+    GPIOA_AFRL  &= ~(AFRL_MASK << (PA6 * AFRL_BITS_PER_PIN));
+    GPIOA_AFRL  |=  (GPIO_AF2_TIM3 << (PA6 * AFRL_BITS_PER_PIN));
 }
 
 static void usart2_init(void)
