@@ -361,6 +361,157 @@ TEST(test_tick_count_increments)
     ASSERT_EQ(ctx.tick_count, before + 10);
 }
 
+/* ---- RX buffer tests ---------------------------------------------------- */
+
+TEST(test_rx_put_get)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    rx_put(&ctx, 'A');
+    char c;
+    ASSERT(rx_get(&ctx, &c));
+    ASSERT_EQ(c, 'A');
+}
+
+TEST(test_rx_get_empty_returns_zero)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char c;
+    ASSERT_EQ(rx_get(&ctx, &c), 0);
+}
+
+TEST(test_rx_overflow_drops)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    for (unsigned i = 0; i < RX_BUF_SIZE - 1; i++)
+        rx_put(&ctx, 'X');
+    rx_put(&ctx, 'Y');  /* should be dropped */
+    char c;
+    for (unsigned i = 0; i < RX_BUF_SIZE - 1; i++) {
+        ASSERT(rx_get(&ctx, &c));
+        ASSERT_EQ(c, 'X');
+    }
+    ASSERT_EQ(rx_get(&ctx, &c), 0);  /* no 'Y' */
+}
+
+/* ---- Command processing tests ------------------------------------------- */
+
+static void feed_cmd(ventway_ctx_t *ctx, const char *cmd)
+{
+    while (*cmd)
+        cmd_process_byte(ctx, *cmd++);
+    cmd_process_byte(ctx, '\n');
+}
+
+TEST(test_cmd_status)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    /* Drain any init output */
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "status");
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "INHALE") != NULL);
+    ASSERT(strstr(out, "HOLD") != NULL);
+    ASSERT(strstr(out, "EXHALE") != NULL);
+    ASSERT(strstr(out, "1000ms") != NULL);
+    ASSERT(strstr(out, "80%") != NULL);
+}
+
+TEST(test_cmd_set_duration)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "inhale 2000");
+    ASSERT_EQ(ctx.duration_ms[INHALE], 2000);
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "2000") != NULL);
+}
+
+TEST(test_cmd_set_duty)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "duty hold 50");
+    ASSERT_EQ(ctx.duty_pct_cfg[HOLD], 50);
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "50%") != NULL);
+}
+
+TEST(test_cmd_bad_value)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "inhale abc");
+    ASSERT_EQ(ctx.duration_ms[INHALE], 1000);  /* unchanged */
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "bad value") != NULL);
+}
+
+TEST(test_cmd_unknown)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "foo");
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "unknown cmd") != NULL);
+}
+
+TEST(test_cmd_empty_line_ignored)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    cmd_process_byte(&ctx, '\n');
+    cmd_process_byte(&ctx, '\r');
+    uint32_t n = tx_read(&ctx, out, sizeof(out));
+    ASSERT_EQ(n, 0);
+}
+
+TEST(test_cmd_overflow_value)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "inhale 99999999999");
+    ASSERT_EQ(ctx.duration_ms[INHALE], 1000);  /* unchanged */
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "bad value") != NULL);
+}
+
+TEST(test_cmd_duty_over_100)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    char out[TX_BUF_SIZE];
+    tx_read(&ctx, out, sizeof(out));
+
+    feed_cmd(&ctx, "duty inhale 101");
+    ASSERT_EQ(ctx.duty_pct_cfg[INHALE], 80);  /* unchanged */
+    tx_read(&ctx, out, sizeof(out));
+    ASSERT(strstr(out, "bad value") != NULL);
+}
+
 /* ---- Main --------------------------------------------------------------- */
 
 int main(void)
@@ -402,6 +553,21 @@ int main(void)
     RUN(test_full_cycle_inhale_hold_exhale_inhale);
     RUN(test_multiple_cycles);
     RUN(test_tick_count_increments);
+
+    printf("\nRX buffer:\n");
+    RUN(test_rx_put_get);
+    RUN(test_rx_get_empty_returns_zero);
+    RUN(test_rx_overflow_drops);
+
+    printf("\nCommand processing:\n");
+    RUN(test_cmd_status);
+    RUN(test_cmd_set_duration);
+    RUN(test_cmd_set_duty);
+    RUN(test_cmd_bad_value);
+    RUN(test_cmd_unknown);
+    RUN(test_cmd_empty_line_ignored);
+    RUN(test_cmd_overflow_value);
+    RUN(test_cmd_duty_over_100);
 
     printf("\n%d/%d tests passed.\n", tests_passed, tests_run);
     return 0;

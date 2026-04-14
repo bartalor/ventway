@@ -52,6 +52,7 @@
 
 /* NVIC */
 #define NVIC_ISER0      (*(volatile uint32_t *)0xE000E100)
+#define NVIC_ISER1      (*(volatile uint32_t *)0xE000E104)
 
 /* ---- Constants ---------------------------------------------------------- */
 
@@ -110,7 +111,8 @@ static void gpio_init(void)
 static void usart2_init(void)
 {
     USART2_BRR = SYS_CLK / 115200;
-    USART2_CR1 = (1 << 13) | (1 << 3);  /* UE | TE */
+    USART2_CR1 = (1U << 13) | (1U << 3) | (1U << 2) | (1U << 5);  /* UE | TE | RE | RXNEIE */
+    NVIC_ISER1 = (1U << (38 - 32));  /* Enable USART2 IRQ (IRQ38) */
 }
 
 static void tim3_pwm_init(void)
@@ -142,13 +144,21 @@ static void uart_flush(volatile ventway_ctx_t *ctx)
     }
 }
 
-/* ---- ISR ---------------------------------------------------------------- */
+/* ---- ISRs --------------------------------------------------------------- */
 
 void TIM2_IRQHandler(void)
 {
     TIM2_SR &= ~(1U << 0);  /* Clear UIF */
     if (state_machine_tick((ventway_ctx_t *)&g_ctx))
         pwm_set_duty(g_ctx.duty_pct);
+}
+
+void USART2_IRQHandler(void)
+{
+    if (USART2_SR & (1U << 5)) {  /* RXNE */
+        char c = (char)(USART2_DR & 0xFF);
+        rx_put((ventway_ctx_t *)&g_ctx, c);
+    }
 }
 
 /* ---- Main --------------------------------------------------------------- */
@@ -168,6 +178,11 @@ int main(void)
     tim2_tick_init();
 
     while (1) {
+        /* Process incoming commands */
+        char c;
+        while (rx_get((ventway_ctx_t *)&g_ctx, &c))
+            cmd_process_byte((ventway_ctx_t *)&g_ctx, c);
+
         uart_flush(&g_ctx);
         __asm volatile ("wfi");
     }

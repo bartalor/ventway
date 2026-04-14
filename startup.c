@@ -6,7 +6,8 @@ extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
 extern int main(void);
 void Reset_Handler(void);
 void Default_Handler(void);
-void TIM2_IRQHandler(void) __attribute__((weak, alias("Default_Handler")));
+void TIM2_IRQHandler(void)    __attribute__((weak, alias("Default_Handler")));
+void USART2_IRQHandler(void)  __attribute__((weak, alias("Default_Handler")));
 
 __attribute__((section(".isr_vector")))
 const uint32_t vector_table[] = {
@@ -29,6 +30,8 @@ const uint32_t vector_table[] = {
     0, 0, 0, 0, 0, 0, 0, 0,    /* IRQ 16-23 */
     0, 0, 0, 0,                 /* IRQ 24-27 */
     (uint32_t)TIM2_IRQHandler,  /* IRQ 28 = TIM2 */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, /* IRQ 29-37 */
+    (uint32_t)USART2_IRQHandler,/* IRQ 38 = USART2 */
 };
 
 void Reset_Handler(void)

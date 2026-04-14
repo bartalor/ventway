@@ -15,6 +15,8 @@
 #define SYS_CLK         16000000U
 #define TICK_MS         10U
 #define TX_BUF_SIZE     128U  /* must be power of 2 */
+#define RX_BUF_SIZE     64U   /* must be power of 2 */
+#define CMD_BUF_SIZE    32U
 
 /* ---- State machine types ------------------------------------------------ */
 
@@ -37,6 +39,15 @@ typedef struct {
     uint32_t tx_head;
     uint32_t tx_tail;
 
+    /* RX ring buffer (ISR writes, main loop reads) */
+    char     rx_buf[RX_BUF_SIZE];
+    uint32_t rx_head;
+    uint32_t rx_tail;
+
+    /* Command line buffer */
+    char     cmd_buf[CMD_BUF_SIZE];
+    uint32_t cmd_len;
+
     /* Per-instance configuration (copied from defaults at init) */
     uint32_t duration_ms[STATE_COUNT];
     uint32_t duty_pct_cfg[STATE_COUNT];
@@ -56,6 +67,16 @@ void     tx_put(ventway_ctx_t *ctx, char c);
 void     tx_puts(ventway_ctx_t *ctx, const char *s);
 void     tx_put_uint(ventway_ctx_t *ctx, uint32_t n);
 uint32_t tx_read(ventway_ctx_t *ctx, char *dst, uint32_t max_len);
+
+/* ---- RX buffer API ------------------------------------------------------ */
+
+void rx_put(ventway_ctx_t *ctx, char c);
+int  rx_get(ventway_ctx_t *ctx, char *out);
+
+/* ---- Command processing API --------------------------------------------- */
+
+void cmd_process_byte(ventway_ctx_t *ctx, char c);
+void cmd_execute(ventway_ctx_t *ctx);
 
 /* ---- State machine API -------------------------------------------------- */
 
