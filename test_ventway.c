@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 #include "ventway.h"
 
@@ -120,11 +121,13 @@ TEST(test_tx_buffer_overflow_drops)
 {
     ventway_ctx_t ctx;
     ventway_init(&ctx);
+    ASSERT_EQ(ctx.tx_overflow, 0);
     /* Fill the buffer completely (TX_BUF_SIZE - 1 usable slots) */
     for (unsigned i = 0; i < TX_BUF_SIZE - 1; i++)
         tx_put(&ctx, 'X');
-    /* This should be dropped */
+    /* This should be dropped and counted */
     tx_put(&ctx, 'Y');
+    ASSERT_EQ(ctx.tx_overflow, 1);
 
     char out[TX_BUF_SIZE + 8];
     uint32_t n = tx_read(&ctx, out, sizeof(out));
@@ -180,6 +183,13 @@ TEST(test_fp_div_fractional)
     int32_t diff = result - expected;
     if (diff < 0) diff = -diff;
     ASSERT(diff <= 1);  /* rounding tolerance */
+}
+
+TEST(test_fp_div_by_zero_saturates)
+{
+    ASSERT_EQ(fp_div(FP_FROM_INT(10), 0), INT32_MAX);
+    ASSERT_EQ(fp_div(FP_FROM_INT(-10), 0), INT32_MIN);
+    ASSERT_EQ(fp_div(0, 0), INT32_MAX);  /* 0 >= 0 */
 }
 
 TEST(test_fp_negative)
@@ -885,6 +895,7 @@ int main(void)
     RUN(test_fp_mul_fractional);
     RUN(test_fp_div_basic);
     RUN(test_fp_div_fractional);
+    RUN(test_fp_div_by_zero_saturates);
     RUN(test_fp_negative);
     RUN(test_tx_put_fp);
     RUN(test_tx_put_fp_negative);

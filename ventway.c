@@ -58,8 +58,9 @@ const fp16_t default_pressure_target[STATE_COUNT] = {
 
 void ventway_init(ventway_ctx_t *ctx)
 {
-    ctx->tx_head    = 0;
-    ctx->tx_tail    = 0;
+    ctx->tx_head     = 0;
+    ctx->tx_tail     = 0;
+    ctx->tx_overflow = 0;
     ctx->rx_head    = 0;
     ctx->rx_tail    = 0;
     ctx->cmd_len    = 0;
@@ -95,8 +96,10 @@ void ventway_init(ventway_ctx_t *ctx)
 void tx_put(ventway_ctx_t *ctx, char c)
 {
     uint32_t next = (ctx->tx_head + 1) & (TX_BUF_SIZE - 1);
-    if (next == ctx->tx_tail)
-        return;  /* buffer full — drop character */
+    if (next == ctx->tx_tail) {
+        ctx->tx_overflow++;
+        return;
+    }
     ctx->tx_buf[ctx->tx_head] = c;
     ctx->tx_head = next;
 }
@@ -257,7 +260,12 @@ void cmd_execute(ventway_ctx_t *ctx)
         tx_put_fp(ctx, ctx->pressure, 1);
         tx_puts(ctx, "cmH2O duty=");
         tx_put_uint(ctx, ctx->duty_pct);
-        tx_puts(ctx, "%\r\n");
+        tx_puts(ctx, "%");
+        if (ctx->tx_overflow > 0) {
+            tx_puts(ctx, " TX_DROP=");
+            tx_put_uint(ctx, ctx->tx_overflow);
+        }
+        tx_puts(ctx, "\r\n");
         return;
     }
 

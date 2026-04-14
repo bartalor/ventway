@@ -34,6 +34,8 @@ static inline fp16_t fp_mul(fp16_t a, fp16_t b)
 
 static inline fp16_t fp_div(fp16_t a, fp16_t b)
 {
+    if (b == 0)
+        return (a >= 0) ? INT32_MAX : INT32_MIN;  /* saturate on div-by-zero */
     return (fp16_t)(((int64_t)a << FP_SHIFT) / b);
 }
 
@@ -60,6 +62,7 @@ typedef struct {
     char     tx_buf[TX_BUF_SIZE];
     uint32_t tx_head;
     uint32_t tx_tail;
+    uint32_t tx_overflow;       /* count of dropped characters */
 
     /* RX ring buffer (ISR writes, main loop reads) */
     char     rx_buf[RX_BUF_SIZE];
