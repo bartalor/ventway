@@ -77,12 +77,9 @@ void ventway_init(ventway_ctx_t *ctx)
         ctx->pressure_target[i]  = default_pressure_target[i];
     }
 
-    /* Lung model */
-    ctx->lung_volume = 0;
-    ctx->pressure    = 0;
-    ctx->compliance  = FP_FROM_INT(50);   /* 50 mL/cmH2O */
-    ctx->resistance  = FP_FROM_INT(5);    /* 5 cmH2O/(L/s) */
-    ctx->k_turb      = FP_FROM_INT(10);   /* 10 (mL/s) per %duty */
+    /* Pressure sensor */
+    ctx->sensor_reg = (volatile fp16_t *)0;  /* must be set before use */
+    ctx->pressure   = 0;
 
     /* PID controller */
     ctx->pid_integral  = 0;
@@ -244,11 +241,7 @@ void cmd_execute(ventway_ctx_t *ctx)
             tx_put_fp(ctx, ctx->pressure_target[i], 0);
             tx_puts(ctx, "cmH2O\r\n");
         }
-        tx_puts(ctx, "compliance=");
-        tx_put_fp(ctx, ctx->compliance, 0);
-        tx_puts(ctx, " resistance=");
-        tx_put_fp(ctx, ctx->resistance, 0);
-        tx_puts(ctx, "\r\nKp=");
+        tx_puts(ctx, "Kp=");
         tx_put_fp(ctx, ctx->kp, 1);
         tx_puts(ctx, " Ki=");
         tx_put_fp(ctx, ctx->ki, 1);
@@ -326,46 +319,6 @@ void cmd_execute(ventway_ctx_t *ctx)
         return;
     }
 
-    /* "compliance 30" — set lung compliance */
-    if (str_eq(verb, "compliance")) {
-        char *arg;
-        if (!next_token(ctx->cmd_buf, ctx->cmd_len, &pos, &arg)) {
-            tx_puts(ctx, "usage: compliance <mL/cmH2O>\r\n");
-            return;
-        }
-        int ok;
-        uint32_t val = parse_uint(arg, &ok);
-        if (!ok || val == 0 || val > 200) {
-            tx_puts(ctx, "bad value (1-200)\r\n");
-            return;
-        }
-        ctx->compliance = FP_FROM_INT((int32_t)val);
-        tx_puts(ctx, "compliance = ");
-        tx_put_uint(ctx, val);
-        tx_puts(ctx, "\r\n");
-        return;
-    }
-
-    /* "resistance 8" — set airway resistance */
-    if (str_eq(verb, "resistance")) {
-        char *arg;
-        if (!next_token(ctx->cmd_buf, ctx->cmd_len, &pos, &arg)) {
-            tx_puts(ctx, "usage: resistance <cmH2O/(L/s)>\r\n");
-            return;
-        }
-        int ok;
-        uint32_t val = parse_uint(arg, &ok);
-        if (!ok || val == 0 || val > 50) {
-            tx_puts(ctx, "bad value (1-50)\r\n");
-            return;
-        }
-        ctx->resistance = FP_FROM_INT((int32_t)val);
-        tx_puts(ctx, "resistance = ");
-        tx_put_uint(ctx, val);
-        tx_puts(ctx, "\r\n");
-        return;
-    }
-
     /* PID gain commands: "kp 30" means Kp=3.0 (tenths), same for ki/kd/kb */
     if (str_eq(verb, "kp") || str_eq(verb, "ki") ||
         str_eq(verb, "kd") || str_eq(verb, "kb")) {
@@ -410,52 +363,12 @@ void cmd_process_byte(ventway_ctx_t *ctx, char c)
         ctx->cmd_buf[ctx->cmd_len++] = c;
 }
 
-/* ---- Lung model --------------------------------------------------------- */
+/* ---- Pressure sensor ---------------------------------------------------- */
 
-/*
- * Single-compartment lung: V/C gives elastic pressure, R*flow gives
- * resistive pressure. During inhale/hold the turbine drives flow;
- * during exhale, elastic recoil drives passive expiration.
- *
- * A PEEP valve clamp prevents volume from dropping below C * PEEP,
- * matching the physical behavior of a mechanical PEEP valve.
- */
-
-void lung_model_tick(ventway_ctx_t *ctx)
+void sensor_read(ventway_ctx_t *ctx)
 {
-    fp16_t flow;
-
-    if (ctx->state == EXHALE) {
-        /* Passive exhale: flow driven by pressure above PEEP
-         * flow = -((V/C) - PEEP) / R * 1000
-         * The *1000 converts R from cmH2O/(L/s) to cmH2O/(mL/s) */
-        fp16_t p_elastic = fp_div(ctx->lung_volume, ctx->compliance);
-        fp16_t p_drive = p_elastic - ctx->pressure_target[EXHALE];
-        if (p_drive < 0) p_drive = 0;
-        flow = -fp_div(p_drive, ctx->resistance) * 1000;
-    } else {
-        /* Active: turbine drives flow = k_turb * duty */
-        flow = fp_mul(ctx->k_turb, FP_FROM_INT((int32_t)ctx->duty_pct));
-    }
-
-    ctx->lung_volume += fp_mul(flow, DT_FP);
-
-    /* PEEP valve: clamp volume so pressure >= PEEP target during exhale */
-    fp16_t min_vol = fp_mul(ctx->compliance, ctx->pressure_target[EXHALE]);
-    if (ctx->lung_volume < min_vol)
-        ctx->lung_volume = min_vol;
-
-    /* Safety clamp: max ~1000 mL (physiological limit) */
-    fp16_t max_vol = FP_FROM_INT(1000);
-    if (ctx->lung_volume > max_vol)
-        ctx->lung_volume = max_vol;
-
-    /* Compute airway pressure: P = V/C + R*flow/1000 */
-    fp16_t p_elastic = fp_div(ctx->lung_volume, ctx->compliance);
-    fp16_t p_resistive = fp_mul(ctx->resistance, flow) / 1000;
-    ctx->pressure = p_elastic + p_resistive;
-    if (ctx->pressure < 0)
-        ctx->pressure = 0;
+    if (ctx->sensor_reg)
+        ctx->pressure = *ctx->sensor_reg;
 }
 
 /* ---- PID controller ----------------------------------------------------- */
@@ -515,11 +428,8 @@ void enter_state(ventway_ctx_t *ctx, state_t s)
         ctx->duty_pct     = 0;
     }
 
-    if (s == INHALE) {
+    if (s == INHALE)
         ctx->cycle_count++;
-        /* Reset lung volume at start of new breath */
-        ctx->lung_volume = fp_mul(ctx->compliance, ctx->pressure_target[EXHALE]);
-    }
 
     ctx->state_changed = 1;
 }
@@ -549,9 +459,9 @@ int state_machine_tick(ventway_ctx_t *ctx)
 
     if (ctx->state_ticks > 0) {
         ctx->state_ticks--;
-        /* Closed-loop: PID computes duty, lung model advances */
+        /* Closed-loop: read sensor, then PID computes duty */
+        sensor_read(ctx);
         pid_tick(ctx);
-        lung_model_tick(ctx);
         return 0;
     }
 

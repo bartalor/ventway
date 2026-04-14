@@ -79,14 +79,11 @@ typedef struct {
     /* Per-state pressure targets in cmH2O (Q16.16) */
     fp16_t   pressure_target[STATE_COUNT];
 
-    /* Lung model state */
-    fp16_t   lung_volume;       /* mL (Q16.16) */
-    fp16_t   pressure;          /* airway pressure, cmH2O (Q16.16) */
-
-    /* Lung parameters (tunable) */
-    fp16_t   compliance;        /* mL/cmH2O (Q16.16), default 50 */
-    fp16_t   resistance;        /* cmH2O/(L/s) (Q16.16), default 5 */
-    fp16_t   k_turb;            /* flow gain: (mL/s) per %duty (Q16.16), default 10 */
+    /* Pressure sensor — sensor_read() reads from this register each tick.
+     * On real hardware: points to ADC data register.
+     * In tests: points to a local variable for injection. */
+    volatile fp16_t *sensor_reg;
+    fp16_t   pressure;          /* last sensor reading, cmH2O (Q16.16) */
 
     /* PID controller state */
     fp16_t   pid_integral;
@@ -126,9 +123,19 @@ int  rx_get(ventway_ctx_t *ctx, char *out);
 void cmd_process_byte(ventway_ctx_t *ctx, char c);
 void cmd_execute(ventway_ctx_t *ctx);
 
-/* ---- Lung model and PID API --------------------------------------------- */
+/* ---- Pressure sensor API ------------------------------------------------ */
 
-void lung_model_tick(ventway_ctx_t *ctx);
+/*
+ * Read airway pressure from hardware sensor register.
+ * On real hardware this reads an ADC. In simulation, a Renode peripheral
+ * (lung model) writes the pressure value to this register.
+ *
+ * sensor_read() is called once per tick before pid_tick().
+ */
+void sensor_read(ventway_ctx_t *ctx);
+
+/* ---- PID controller API ------------------------------------------------- */
+
 void pid_tick(ventway_ctx_t *ctx);
 
 /* ---- State machine API -------------------------------------------------- */

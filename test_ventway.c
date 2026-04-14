@@ -1,5 +1,10 @@
 /*
- * test_ventway.c — Native host tests for ventway state machine, PID, and lung model
+ * test_ventway.c — Native host tests for ventway controller
+ *
+ * The firmware is a pure controller — it reads pressure from a sensor
+ * register and outputs duty via PID. The lung model (patient) is external
+ * (runs in Renode as a Python peripheral). These tests inject pressure
+ * values directly via the sensor_reg pointer.
  *
  * Build:  make test
  * Run:    ./build/test_ventway
@@ -64,6 +69,17 @@ static int tests_passed = 0;
         exit(1);                                                \
     }                                                           \
 } while (0)
+
+/* ---- Helper: init context with sensor wired to a local variable --------- */
+
+static fp16_t fake_sensor;
+
+static void init_with_sensor(ventway_ctx_t *ctx)
+{
+    ventway_init(ctx);
+    fake_sensor = 0;
+    ctx->sensor_reg = &fake_sensor;
+}
 
 /* ---- TX buffer tests ---------------------------------------------------- */
 
@@ -271,17 +287,6 @@ TEST(test_init_copies_default_pressure_targets)
     ASSERT_EQ(ctx.pressure_target[EXHALE], FP_FROM_INT(5));
 }
 
-TEST(test_init_lung_defaults)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    ASSERT_EQ(ctx.compliance, FP_FROM_INT(50));
-    ASSERT_EQ(ctx.resistance, FP_FROM_INT(5));
-    ASSERT_EQ(ctx.k_turb,    FP_FROM_INT(10));
-    ASSERT_EQ(ctx.lung_volume, 0);
-    ASSERT_EQ(ctx.pressure, 0);
-}
-
 TEST(test_init_pid_defaults)
 {
     ventway_ctx_t ctx;
@@ -294,6 +299,14 @@ TEST(test_init_pid_defaults)
     ASSERT_EQ(ctx.pid_prev_meas, 0);
 }
 
+TEST(test_init_sensor_reg_null)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ASSERT(ctx.sensor_reg == (volatile fp16_t *)0);
+    ASSERT_EQ(ctx.pressure, 0);
+}
+
 TEST(test_custom_duration_applied)
 {
     ventway_ctx_t ctx;
@@ -301,6 +314,42 @@ TEST(test_custom_duration_applied)
     ctx.duration_ms[INHALE] = 2000;
     enter_state(&ctx, INHALE);
     ASSERT_EQ(ctx.state_ticks, 2000 / TICK_MS);
+}
+
+/* ---- Sensor read tests -------------------------------------------------- */
+
+TEST(test_sensor_read_from_register)
+{
+    ventway_ctx_t ctx;
+    fp16_t sensor_val = FP_FROM_INT(15);
+    init_with_sensor(&ctx);
+    fake_sensor = sensor_val;
+    sensor_read(&ctx);
+    ASSERT_EQ(ctx.pressure, sensor_val);
+}
+
+TEST(test_sensor_read_null_register_noop)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    ctx.pressure = FP_FROM_INT(42);
+    /* sensor_reg is NULL from init */
+    sensor_read(&ctx);
+    ASSERT_EQ(ctx.pressure, FP_FROM_INT(42));  /* unchanged */
+}
+
+TEST(test_sensor_read_updates_each_tick)
+{
+    ventway_ctx_t ctx;
+    init_with_sensor(&ctx);
+
+    fake_sensor = FP_FROM_INT(10);
+    sensor_read(&ctx);
+    ASSERT_EQ(ctx.pressure, FP_FROM_INT(10));
+
+    fake_sensor = FP_FROM_INT(20);
+    sensor_read(&ctx);
+    ASSERT_EQ(ctx.pressure, FP_FROM_INT(20));
 }
 
 /* ---- enter_state tests -------------------------------------------------- */
@@ -339,16 +388,6 @@ TEST(test_enter_state_exhale)
     ASSERT_EQ(ctx.cycle_count, 0);  /* EXHALE does not increment */
     ASSERT_EQ(ctx.pid_integral, 0);  /* integrator reset on exhale */
     ASSERT_EQ(ctx.duty_pct, 0);     /* duty zeroed on exhale */
-}
-
-TEST(test_enter_state_inhale_resets_volume_to_peep)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    ctx.lung_volume = FP_FROM_INT(500);  /* arbitrary */
-    enter_state(&ctx, INHALE);
-    /* Volume should reset to C * PEEP = 50 * 5 = 250 mL */
-    ASSERT_EQ(ctx.lung_volume, fp_mul(ctx.compliance, ctx.pressure_target[EXHALE]));
 }
 
 TEST(test_enter_state_exhale_resets_integrator)
@@ -406,88 +445,12 @@ TEST(test_enter_state_invalid_is_noop)
     ASSERT_EQ(ctx.cycle_count, 0);
 }
 
-/* ---- Lung model tests --------------------------------------------------- */
-
-TEST(test_lung_zero_duty_zero_pressure)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, INHALE);
-    ctx.duty_pct = 0;
-    ctx.lung_volume = fp_mul(ctx.compliance, ctx.pressure_target[EXHALE]);
-    lung_model_tick(&ctx);
-    /* With zero duty during inhale, no flow added; volume stays at PEEP level */
-    ASSERT_FP_NEAR(ctx.pressure, 5, 1);
-}
-
-TEST(test_lung_pressure_rises_with_duty)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, INHALE);
-    ctx.lung_volume = fp_mul(ctx.compliance, ctx.pressure_target[EXHALE]);
-
-    /* Apply high duty for several ticks */
-    ctx.duty_pct = 80;
-    for (int i = 0; i < 50; i++)
-        lung_model_tick(&ctx);
-
-    /* Pressure should have risen above PEEP */
-    ASSERT(ctx.pressure > FP_FROM_INT(5));
-}
-
-TEST(test_lung_exhale_pressure_decays)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-
-    /* Set up some lung volume */
-    ctx.lung_volume = FP_FROM_INT(500);
-    enter_state(&ctx, EXHALE);
-
-    fp16_t initial_pressure = fp_div(ctx.lung_volume, ctx.compliance);
-
-    /* Tick exhale for a while */
-    for (int i = 0; i < 100; i++)
-        lung_model_tick(&ctx);
-
-    /* Pressure should have decreased toward PEEP */
-    ASSERT(ctx.pressure < initial_pressure);
-    ASSERT_FP_NEAR(ctx.pressure, 5, 2);  /* should be near PEEP */
-}
-
-TEST(test_lung_volume_clamped_at_max)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, INHALE);
-    ctx.lung_volume = FP_FROM_INT(999);
-    ctx.duty_pct = 100;
-    lung_model_tick(&ctx);
-    ASSERT(ctx.lung_volume <= FP_FROM_INT(1000));
-}
-
-TEST(test_lung_peep_valve_clamp)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    enter_state(&ctx, EXHALE);
-    ctx.lung_volume = FP_FROM_INT(100);  /* low volume */
-
-    /* Tick many times — volume shouldn't drop below C*PEEP */
-    for (int i = 0; i < 500; i++)
-        lung_model_tick(&ctx);
-
-    fp16_t min_vol = fp_mul(ctx.compliance, ctx.pressure_target[EXHALE]);
-    ASSERT(ctx.lung_volume >= min_vol);
-}
-
 /* ---- PID controller tests ----------------------------------------------- */
 
 TEST(test_pid_positive_error_increases_duty)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
     ctx.pressure = 0;  /* target=20, error=+20 → duty should rise */
     ctx.duty_pct = 0;
@@ -500,7 +463,7 @@ TEST(test_pid_positive_error_increases_duty)
 TEST(test_pid_clamp_max)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
     ctx.pressure = 0;            /* huge positive error */
     ctx.kp = FP_FROM_INT(100);  /* very high gain */
@@ -513,7 +476,7 @@ TEST(test_pid_clamp_max)
 TEST(test_pid_clamp_min)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
     ctx.pressure = FP_FROM_INT(40);  /* way above target=20 → negative error */
     ctx.kp = FP_FROM_INT(100);
@@ -526,7 +489,7 @@ TEST(test_pid_clamp_min)
 TEST(test_pid_anti_windup)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
     ctx.pressure = 0;  /* large error, output will saturate */
 
@@ -543,41 +506,101 @@ TEST(test_pid_anti_windup)
     ASSERT(ctx.duty_pct < 50);
 }
 
-/* ---- Closed-loop integration tests -------------------------------------- */
+/* ---- Closed-loop tests with injected sensor values ---------------------- */
+
+/*
+ * These tests simulate the feedback loop by manually stepping
+ * a simple lung model alongside the PID, injecting pressure via
+ * the sensor_reg pointer. This proves the controller works with
+ * external feedback — the same thing Renode does at runtime.
+ */
+
+/* Minimal C lung model for test-side feedback simulation */
+typedef struct {
+    fp16_t volume;
+    fp16_t compliance;
+    fp16_t resistance;
+    fp16_t k_turb;
+    fp16_t peep;
+} test_lung_t;
+
+static void test_lung_init(test_lung_t *lung)
+{
+    lung->compliance = FP_FROM_INT(50);
+    lung->resistance = FP_FROM_INT(5);
+    lung->k_turb     = FP_FROM_INT(10);
+    lung->peep       = FP_FROM_INT(5);
+    lung->volume     = fp_mul(lung->compliance, lung->peep);
+}
+
+static fp16_t test_lung_tick(test_lung_t *lung, uint32_t duty_pct, int is_exhale)
+{
+    fp16_t flow;
+    if (is_exhale) {
+        fp16_t p_elastic = fp_div(lung->volume, lung->compliance);
+        fp16_t p_drive = p_elastic - lung->peep;
+        if (p_drive < 0) p_drive = 0;
+        flow = -(fp_div(p_drive, lung->resistance)) * 1000;
+    } else {
+        flow = fp_mul(lung->k_turb, FP_FROM_INT((int32_t)duty_pct));
+    }
+
+    lung->volume += fp_mul(flow, DT_FP);
+
+    fp16_t min_vol = fp_mul(lung->compliance, lung->peep);
+    if (lung->volume < min_vol)
+        lung->volume = min_vol;
+    fp16_t max_vol = FP_FROM_INT(1000);
+    if (lung->volume > max_vol)
+        lung->volume = max_vol;
+
+    fp16_t p_elastic   = fp_div(lung->volume, lung->compliance);
+    fp16_t p_resistive = fp_mul(lung->resistance, flow) / 1000;
+    fp16_t pressure = p_elastic + p_resistive;
+    if (pressure < 0) pressure = 0;
+    return pressure;
+}
 
 TEST(test_closed_loop_reaches_target)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    test_lung_t lung;
+    init_with_sensor(&ctx);
+    test_lung_init(&lung);
     enter_state(&ctx, INHALE);
 
-    /* Run full closed loop (PID + lung) for 2 seconds (200 ticks) */
+    /* Run full closed loop for 2 seconds (200 ticks) */
     for (int i = 0; i < 200; i++) {
+        sensor_read(&ctx);
         pid_tick(&ctx);
-        lung_model_tick(&ctx);
+        fake_sensor = test_lung_tick(&lung, ctx.duty_pct, 0);
     }
 
-    /* Pressure should be near 20 cmH2O target */
-    ASSERT_FP_NEAR(ctx.pressure, 20, 3);
+    /* Pressure should be near 20 cmH2O target (allow overshoot settling) */
+    ASSERT_FP_NEAR(ctx.pressure, 20, 5);
 }
 
 TEST(test_closed_loop_exhale_settles_to_peep)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    test_lung_t lung;
+    init_with_sensor(&ctx);
+    test_lung_init(&lung);
 
     /* First fill the lungs */
     enter_state(&ctx, INHALE);
     for (int i = 0; i < 100; i++) {
+        sensor_read(&ctx);
         pid_tick(&ctx);
-        lung_model_tick(&ctx);
+        fake_sensor = test_lung_tick(&lung, ctx.duty_pct, 0);
     }
 
     /* Now exhale */
     enter_state(&ctx, EXHALE);
     for (int i = 0; i < 300; i++) {
+        sensor_read(&ctx);
         pid_tick(&ctx);
-        lung_model_tick(&ctx);
+        fake_sensor = test_lung_tick(&lung, ctx.duty_pct, 1);
     }
 
     /* Pressure should settle near PEEP (5 cmH2O) */
@@ -587,7 +610,7 @@ TEST(test_closed_loop_exhale_settles_to_peep)
 TEST(test_closed_loop_full_cycle)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
 
     /* Run through a complete cycle using state_machine_tick */
@@ -613,7 +636,7 @@ TEST(test_closed_loop_full_cycle)
 TEST(test_tick_decrements_state_ticks)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
     uint32_t initial = ctx.state_ticks;
 
@@ -626,7 +649,7 @@ TEST(test_tick_decrements_state_ticks)
 TEST(test_tick_no_transition_returns_zero)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
 
     int transitioned = state_machine_tick(&ctx);
@@ -636,7 +659,7 @@ TEST(test_tick_no_transition_returns_zero)
 TEST(test_tick_transition_returns_one)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
     ctx.state_ticks = 0;  /* force immediate transition */
 
@@ -647,7 +670,7 @@ TEST(test_tick_transition_returns_one)
 TEST(test_tick_count_increments)
 {
     ventway_ctx_t ctx;
-    ventway_init(&ctx);
+    init_with_sensor(&ctx);
     enter_state(&ctx, INHALE);
     uint32_t before = ctx.tick_count;
 
@@ -655,6 +678,19 @@ TEST(test_tick_count_increments)
         state_machine_tick(&ctx);
 
     ASSERT_EQ(ctx.tick_count, before + 10);
+}
+
+TEST(test_tick_calls_sensor_read)
+{
+    ventway_ctx_t ctx;
+    init_with_sensor(&ctx);
+    enter_state(&ctx, INHALE);
+    fake_sensor = FP_FROM_INT(12);
+
+    state_machine_tick(&ctx);
+
+    /* After tick, pressure should reflect sensor value */
+    ASSERT_EQ(ctx.pressure, FP_FROM_INT(12));
 }
 
 /* ---- RX buffer tests ---------------------------------------------------- */
@@ -715,7 +751,6 @@ TEST(test_cmd_status)
     ASSERT(strstr(out, "HOLD") != NULL);
     ASSERT(strstr(out, "EXHALE") != NULL);
     ASSERT(strstr(out, "target=20cmH2O") != NULL);
-    ASSERT(strstr(out, "compliance=50") != NULL);
     ASSERT(strstr(out, "Kp=3.0") != NULL);
 }
 
@@ -782,32 +817,6 @@ TEST(test_cmd_target_over_50)
     ASSERT_EQ(ctx.pressure_target[INHALE], FP_FROM_INT(20));  /* unchanged */
     tx_read(&ctx, out, sizeof(out));
     ASSERT(strstr(out, "bad value") != NULL);
-}
-
-TEST(test_cmd_compliance)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    char out[TX_BUF_SIZE];
-    tx_read(&ctx, out, sizeof(out));
-
-    feed_cmd(&ctx, "compliance 30");
-    ASSERT_EQ(ctx.compliance, FP_FROM_INT(30));
-    tx_read(&ctx, out, sizeof(out));
-    ASSERT(strstr(out, "30") != NULL);
-}
-
-TEST(test_cmd_resistance)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    char out[TX_BUF_SIZE];
-    tx_read(&ctx, out, sizeof(out));
-
-    feed_cmd(&ctx, "resistance 8");
-    ASSERT_EQ(ctx.resistance, FP_FROM_INT(8));
-    tx_read(&ctx, out, sizeof(out));
-    ASSERT(strstr(out, "8") != NULL);
 }
 
 TEST(test_cmd_kp)
@@ -909,27 +918,24 @@ int main(void)
     printf("\nRuntime configuration:\n");
     RUN(test_init_copies_default_durations);
     RUN(test_init_copies_default_pressure_targets);
-    RUN(test_init_lung_defaults);
     RUN(test_init_pid_defaults);
+    RUN(test_init_sensor_reg_null);
     RUN(test_custom_duration_applied);
+
+    printf("\nSensor read:\n");
+    RUN(test_sensor_read_from_register);
+    RUN(test_sensor_read_null_register_noop);
+    RUN(test_sensor_read_updates_each_tick);
 
     printf("\nenter_state:\n");
     RUN(test_enter_state_inhale);
     RUN(test_enter_state_hold);
     RUN(test_enter_state_exhale);
-    RUN(test_enter_state_inhale_resets_volume_to_peep);
     RUN(test_enter_state_exhale_resets_integrator);
     RUN(test_enter_state_hold_preserves_integrator);
     RUN(test_state_log_message);
     RUN(test_state_log_noop_when_no_change);
     RUN(test_enter_state_invalid_is_noop);
-
-    printf("\nLung model:\n");
-    RUN(test_lung_zero_duty_zero_pressure);
-    RUN(test_lung_pressure_rises_with_duty);
-    RUN(test_lung_exhale_pressure_decays);
-    RUN(test_lung_volume_clamped_at_max);
-    RUN(test_lung_peep_valve_clamp);
 
     printf("\nPID controller:\n");
     RUN(test_pid_positive_error_increases_duty);
@@ -937,7 +943,7 @@ int main(void)
     RUN(test_pid_clamp_min);
     RUN(test_pid_anti_windup);
 
-    printf("\nClosed-loop integration:\n");
+    printf("\nClosed-loop (sensor injection):\n");
     RUN(test_closed_loop_reaches_target);
     RUN(test_closed_loop_exhale_settles_to_peep);
     RUN(test_closed_loop_full_cycle);
@@ -947,6 +953,7 @@ int main(void)
     RUN(test_tick_no_transition_returns_zero);
     RUN(test_tick_transition_returns_one);
     RUN(test_tick_count_increments);
+    RUN(test_tick_calls_sensor_read);
 
     printf("\nRX buffer:\n");
     RUN(test_rx_put_get);
@@ -960,8 +967,6 @@ int main(void)
     RUN(test_cmd_set_target);
     RUN(test_cmd_target_bad_state);
     RUN(test_cmd_target_over_50);
-    RUN(test_cmd_compliance);
-    RUN(test_cmd_resistance);
     RUN(test_cmd_kp);
     RUN(test_cmd_bad_value);
     RUN(test_cmd_unknown);

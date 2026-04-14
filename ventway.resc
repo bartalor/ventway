@@ -1,10 +1,16 @@
-### Renode script for Ventway ventilator simulator
+### Renode script for Ventway ventilator controller + lung model
 ### Usage: renode ventway.resc
+###
+### Architecture:
+###   Firmware (ventway.elf) = pure controller — reads pressure sensor, outputs PWM duty
+###   Lung model (lung_model.py) = simulated patient — reads duty, computes pressure
+###   They communicate through memory-mapped registers only, like real hardware.
 
 using sysbus
 
 mach create "ventway"
 machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
+machine LoadPlatformDescription @ventway.repl
 
 sysbus LoadELF @build/ventway.elf
 

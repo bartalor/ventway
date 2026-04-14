@@ -1,10 +1,15 @@
 /*
- * Ventway — Bare metal STM32F407 ventilator breathing cycle simulator
+ * Ventway — Bare metal STM32F407 ventilator controller
  *
  * State machine: INHALE -> HOLD -> EXHALE -> INHALE ...
- * TIM2 interrupt drives 10ms tick — PID + lung model per tick.
- * TIM3 CH1 (PA6) outputs PWM for simulated turbine.
+ * TIM2 interrupt drives 10ms tick — PID reads pressure sensor, outputs duty.
+ * TIM3 CH1 (PA6) outputs PWM for turbine.
  * USART2 (PA2 TX/RX) logs state and accepts runtime commands.
+ *
+ * The firmware is a pure controller — it reads pressure from a sensor
+ * register and outputs duty via PWM. The lung/patient is external:
+ * in simulation, a Renode peripheral closes the loop (reads PWM duty,
+ * runs lung model, writes pressure to the sensor register).
  *
  * Closed-loop PCV at ~20 breaths/min (3s cycle):
  *   INHALE: 1.0s   — PID targets 20 cmH2O inspiratory pressure
@@ -53,6 +58,14 @@
 /* NVIC */
 #define NVIC_ISER0      (*(volatile uint32_t *)0xE000E100)
 #define NVIC_ISER1      (*(volatile uint32_t *)0xE000E104)
+
+/*
+ * Pressure sensor register — Renode lung model peripheral writes here.
+ * The peripheral is mapped at 0x50000000 in the Renode platform description.
+ * Offset 0x00: pressure in Q16.16 cmH2O (read-only from firmware's perspective).
+ */
+#define PSENS_BASE      0x50000000
+#define PSENS_DR        (*(volatile fp16_t *)(PSENS_BASE + 0x00))
 
 /* ---- Constants ---------------------------------------------------------- */
 
@@ -171,6 +184,7 @@ int main(void)
     tim3_pwm_init();
 
     ventway_init((ventway_ctx_t *)&g_ctx);
+    ((ventway_ctx_t *)&g_ctx)->sensor_reg = &PSENS_DR;
     tx_puts((ventway_ctx_t *)&g_ctx, "Ventway starting\r\n");
     enter_state((ventway_ctx_t *)&g_ctx, INHALE);
     state_log((ventway_ctx_t *)&g_ctx);
