@@ -155,11 +155,14 @@ TEST(test_total_cycle_duration)
     ASSERT_EQ(total, 3000);  /* 3s = 20 breaths/min */
 }
 
-TEST(test_state_duty_cycles)
+TEST(test_state_duty_ramps)
 {
-    ASSERT_EQ(state_duty_pct[INHALE], 80);
-    ASSERT_EQ(state_duty_pct[HOLD],   30);
-    ASSERT_EQ(state_duty_pct[EXHALE],  0);
+    ASSERT_EQ(state_duty_start[INHALE],  0);
+    ASSERT_EQ(state_duty_end[INHALE],   80);
+    ASSERT_EQ(state_duty_start[HOLD],   80);
+    ASSERT_EQ(state_duty_end[HOLD],     80);
+    ASSERT_EQ(state_duty_start[EXHALE], 80);
+    ASSERT_EQ(state_duty_end[EXHALE],    0);
 }
 
 /* ---- Runtime configuration tests ---------------------------------------- */
@@ -173,13 +176,16 @@ TEST(test_init_copies_default_durations)
     ASSERT_EQ(ctx.duration_ms[EXHALE], 1500);
 }
 
-TEST(test_init_copies_default_duty_cycles)
+TEST(test_init_copies_default_duty_ramps)
 {
     ventway_ctx_t ctx;
     ventway_init(&ctx);
-    ASSERT_EQ(ctx.duty_pct_cfg[INHALE], 80);
-    ASSERT_EQ(ctx.duty_pct_cfg[HOLD],   30);
-    ASSERT_EQ(ctx.duty_pct_cfg[EXHALE],  0);
+    ASSERT_EQ(ctx.duty_start[INHALE],  0);
+    ASSERT_EQ(ctx.duty_end[INHALE],   80);
+    ASSERT_EQ(ctx.duty_start[HOLD],   80);
+    ASSERT_EQ(ctx.duty_end[HOLD],     80);
+    ASSERT_EQ(ctx.duty_start[EXHALE], 80);
+    ASSERT_EQ(ctx.duty_end[EXHALE],    0);
 }
 
 TEST(test_custom_duration_applied)
@@ -191,11 +197,11 @@ TEST(test_custom_duration_applied)
     ASSERT_EQ(ctx.state_ticks, 2000 / TICK_MS);
 }
 
-TEST(test_custom_duty_applied)
+TEST(test_custom_duty_start_applied)
 {
     ventway_ctx_t ctx;
     ventway_init(&ctx);
-    ctx.duty_pct_cfg[HOLD] = 50;
+    ctx.duty_start[HOLD] = 50;
     enter_state(&ctx, HOLD);
     ASSERT_EQ(ctx.duty_pct, 50);
 }
@@ -210,7 +216,7 @@ TEST(test_enter_state_inhale)
 
     ASSERT_EQ(ctx.state, INHALE);
     ASSERT_EQ(ctx.state_ticks, 1000 / TICK_MS);
-    ASSERT_EQ(ctx.duty_pct, 80);
+    ASSERT_EQ(ctx.duty_pct, 0);   /* starts at duty_start (ramp up from 0) */
     ASSERT_EQ(ctx.cycle_count, 1);  /* INHALE increments cycle */
     ASSERT_EQ(ctx.state_changed, 1);
 }
@@ -223,7 +229,7 @@ TEST(test_enter_state_hold)
 
     ASSERT_EQ(ctx.state, HOLD);
     ASSERT_EQ(ctx.state_ticks, 500 / TICK_MS);
-    ASSERT_EQ(ctx.duty_pct, 30);
+    ASSERT_EQ(ctx.duty_pct, 80);  /* starts at duty_start (flat 80) */
     ASSERT_EQ(ctx.cycle_count, 0);  /* HOLD does not increment */
 }
 
@@ -235,7 +241,7 @@ TEST(test_enter_state_exhale)
 
     ASSERT_EQ(ctx.state, EXHALE);
     ASSERT_EQ(ctx.state_ticks, 1500 / TICK_MS);
-    ASSERT_EQ(ctx.duty_pct, 0);
+    ASSERT_EQ(ctx.duty_pct, 80);  /* starts at duty_start (ramp down from 80) */
     ASSERT_EQ(ctx.cycle_count, 0);  /* EXHALE does not increment */
 }
 
@@ -249,10 +255,10 @@ TEST(test_state_log_message)
     ASSERT_EQ(ctx.state_changed, 0);  /* flag cleared */
     char out[TX_BUF_SIZE];
     tx_read(&ctx, out, sizeof(out));
-    /* Should contain cycle number, state name, and duty */
+    /* Should contain cycle number, state name, and duty ramp */
     ASSERT(strstr(out, "[cycle 1]") != NULL);
     ASSERT(strstr(out, "INHALE") != NULL);
-    ASSERT(strstr(out, "80%") != NULL);
+    ASSERT(strstr(out, "0%->80%") != NULL);
 }
 
 TEST(test_state_log_noop_when_no_change)
@@ -327,7 +333,7 @@ TEST(test_full_cycle_inhale_hold_exhale_inhale)
 
     /* Should have transitioned to HOLD */
     ASSERT_EQ(ctx.state, HOLD);
-    ASSERT_EQ(ctx.duty_pct, 30);
+    ASSERT_EQ(ctx.duty_pct, 80);  /* duty_start[HOLD] = 80 */
 
     /* Tick through HOLD: state_ticks=50, need 51 */
     for (int i = 0; i < 51; i++)
@@ -335,7 +341,7 @@ TEST(test_full_cycle_inhale_hold_exhale_inhale)
 
     /* Should have transitioned to EXHALE */
     ASSERT_EQ(ctx.state, EXHALE);
-    ASSERT_EQ(ctx.duty_pct, 0);
+    ASSERT_EQ(ctx.duty_pct, 80);  /* duty_start[EXHALE] = 80 */
 
     /* Tick through EXHALE: state_ticks=150, need 151 */
     for (int i = 0; i < 151; i++)
@@ -343,7 +349,7 @@ TEST(test_full_cycle_inhale_hold_exhale_inhale)
 
     /* Should have transitioned back to INHALE */
     ASSERT_EQ(ctx.state, INHALE);
-    ASSERT_EQ(ctx.duty_pct, 80);
+    ASSERT_EQ(ctx.duty_pct, 0);   /* duty_start[INHALE] = 0 */
     ASSERT_EQ(ctx.cycle_count, 2);  /* second cycle */
 }
 
@@ -373,6 +379,51 @@ TEST(test_tick_count_increments)
         state_machine_tick(&ctx);
 
     ASSERT_EQ(ctx.tick_count, before + 10);
+}
+
+/* ---- Interpolation tests ------------------------------------------------ */
+
+TEST(test_duty_ramps_up_during_inhale)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, INHALE);
+    ASSERT_EQ(ctx.duty_pct, 0);  /* start */
+
+    /* Tick halfway through INHALE (50 of 100 ticks) */
+    for (int i = 0; i < 50; i++)
+        state_machine_tick(&ctx);
+    ASSERT_EQ(ctx.duty_pct, 40);  /* halfway: 0 + (80-0)*50/100 = 40 */
+
+    /* Tick to end of INHALE */
+    for (int i = 0; i < 50; i++)
+        state_machine_tick(&ctx);
+    ASSERT_EQ(ctx.duty_pct, 80);  /* end: full ramp */
+}
+
+TEST(test_duty_ramps_down_during_exhale)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, EXHALE);
+    ASSERT_EQ(ctx.duty_pct, 80);  /* start */
+
+    /* Tick halfway through EXHALE (75 of 150 ticks) */
+    for (int i = 0; i < 75; i++)
+        state_machine_tick(&ctx);
+    ASSERT_EQ(ctx.duty_pct, 40);  /* halfway: 80 - (80-0)*75/150 = 40 */
+}
+
+TEST(test_duty_flat_during_hold)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    enter_state(&ctx, HOLD);
+    ASSERT_EQ(ctx.duty_pct, 80);
+
+    for (int i = 0; i < 25; i++)
+        state_machine_tick(&ctx);
+    ASSERT_EQ(ctx.duty_pct, 80);  /* flat: start == end */
 }
 
 /* ---- RX buffer tests ---------------------------------------------------- */
@@ -433,7 +484,7 @@ TEST(test_cmd_status)
     ASSERT(strstr(out, "HOLD") != NULL);
     ASSERT(strstr(out, "EXHALE") != NULL);
     ASSERT(strstr(out, "1000ms") != NULL);
-    ASSERT(strstr(out, "80%") != NULL);
+    ASSERT(strstr(out, "0%->80%") != NULL);
 }
 
 TEST(test_cmd_set_duration)
@@ -456,10 +507,12 @@ TEST(test_cmd_set_duty)
     char out[TX_BUF_SIZE];
     tx_read(&ctx, out, sizeof(out));
 
-    feed_cmd(&ctx, "duty hold 50");
-    ASSERT_EQ(ctx.duty_pct_cfg[HOLD], 50);
+    feed_cmd(&ctx, "duty hold 40 60");
+    ASSERT_EQ(ctx.duty_start[HOLD], 40);
+    ASSERT_EQ(ctx.duty_end[HOLD], 60);
     tx_read(&ctx, out, sizeof(out));
-    ASSERT(strstr(out, "50%") != NULL);
+    ASSERT(strstr(out, "40%") != NULL);
+    ASSERT(strstr(out, "60%") != NULL);
 }
 
 TEST(test_cmd_bad_value)
@@ -520,8 +573,8 @@ TEST(test_cmd_duty_over_100)
     char out[TX_BUF_SIZE];
     tx_read(&ctx, out, sizeof(out));
 
-    feed_cmd(&ctx, "duty inhale 101");
-    ASSERT_EQ(ctx.duty_pct_cfg[INHALE], 80);  /* unchanged */
+    feed_cmd(&ctx, "duty inhale 101 0");
+    ASSERT_EQ(ctx.duty_start[INHALE], 0);  /* unchanged */
     tx_read(&ctx, out, sizeof(out));
     ASSERT(strstr(out, "bad value") != NULL);
 }
@@ -545,13 +598,13 @@ int main(void)
     RUN(test_state_names);
     RUN(test_state_durations);
     RUN(test_total_cycle_duration);
-    RUN(test_state_duty_cycles);
+    RUN(test_state_duty_ramps);
 
     printf("\nRuntime configuration:\n");
     RUN(test_init_copies_default_durations);
-    RUN(test_init_copies_default_duty_cycles);
+    RUN(test_init_copies_default_duty_ramps);
     RUN(test_custom_duration_applied);
-    RUN(test_custom_duty_applied);
+    RUN(test_custom_duty_start_applied);
 
     printf("\nenter_state:\n");
     RUN(test_enter_state_inhale);
@@ -568,6 +621,11 @@ int main(void)
     RUN(test_full_cycle_inhale_hold_exhale_inhale);
     RUN(test_multiple_cycles);
     RUN(test_tick_count_increments);
+
+    printf("\nDuty interpolation:\n");
+    RUN(test_duty_ramps_up_during_inhale);
+    RUN(test_duty_ramps_down_during_exhale);
+    RUN(test_duty_flat_during_hold);
 
     printf("\nRX buffer:\n");
     RUN(test_rx_put_get);

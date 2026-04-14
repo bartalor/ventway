@@ -29,7 +29,8 @@ typedef enum {
 
 extern const char *const state_names[STATE_COUNT];
 extern const uint32_t    state_duration_ms[STATE_COUNT];
-extern const uint32_t    state_duty_pct[STATE_COUNT];
+extern const uint32_t    state_duty_start[STATE_COUNT];
+extern const uint32_t    state_duty_end[STATE_COUNT];
 
 /* ---- Context struct ----------------------------------------------------- */
 
@@ -50,13 +51,15 @@ typedef struct {
 
     /* Per-instance configuration (copied from defaults at init) */
     uint32_t duration_ms[STATE_COUNT];
-    uint32_t duty_pct_cfg[STATE_COUNT];
+    uint32_t duty_start[STATE_COUNT];
+    uint32_t duty_end[STATE_COUNT];
 
     /* State machine */
     state_t  state;
     uint32_t cycle_count;
     uint32_t tick_count;
     uint32_t state_ticks;
+    uint32_t state_total_ticks;  /* total ticks for current state (for interpolation) */
     uint32_t duty_pct;
     uint32_t state_changed;  /* flag: ISR sets, main loop clears after logging */
 } ventway_ctx_t;

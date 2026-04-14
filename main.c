@@ -149,8 +149,8 @@ static void uart_flush(volatile ventway_ctx_t *ctx)
 void TIM2_IRQHandler(void)
 {
     TIM2_SR &= ~(1U << 0);  /* Clear UIF */
-    if (state_machine_tick((ventway_ctx_t *)&g_ctx))
-        pwm_set_duty(g_ctx.duty_pct);
+    state_machine_tick((ventway_ctx_t *)&g_ctx);
+    pwm_set_duty(g_ctx.duty_pct);
 }
 
 void USART2_IRQHandler(void)

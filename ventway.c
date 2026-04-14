@@ -18,8 +18,11 @@ _Static_assert(sizeof(state_names) / sizeof(state_names[0]) == STATE_COUNT,
 _Static_assert(sizeof(state_duration_ms) / sizeof(state_duration_ms[0]) == STATE_COUNT,
                "state_duration_ms must have exactly STATE_COUNT entries");
 
-_Static_assert(sizeof(state_duty_pct) / sizeof(state_duty_pct[0]) == STATE_COUNT,
-               "state_duty_pct must have exactly STATE_COUNT entries");
+_Static_assert(sizeof(state_duty_start) / sizeof(state_duty_start[0]) == STATE_COUNT,
+               "state_duty_start must have exactly STATE_COUNT entries");
+
+_Static_assert(sizeof(state_duty_end) / sizeof(state_duty_end[0]) == STATE_COUNT,
+               "state_duty_end must have exactly STATE_COUNT entries");
 
 /* ---- Lookup tables ------------------------------------------------------ */
 
@@ -35,9 +38,15 @@ const uint32_t state_duration_ms[STATE_COUNT] = {
     [EXHALE] = 1500,
 };
 
-const uint32_t state_duty_pct[STATE_COUNT] = {
+const uint32_t state_duty_start[STATE_COUNT] = {
+    [INHALE] =  0,
+    [HOLD]   = 80,
+    [EXHALE] = 80,
+};
+
+const uint32_t state_duty_end[STATE_COUNT] = {
     [INHALE] = 80,
-    [HOLD]   = 30,
+    [HOLD]   = 80,
     [EXHALE] =  0,
 };
 
@@ -57,9 +66,12 @@ void ventway_init(ventway_ctx_t *ctx)
     ctx->duty_pct      = 0;
     ctx->state_changed = 0;
 
+    ctx->state_total_ticks = 0;
+
     for (int i = 0; i < STATE_COUNT; i++) {
-        ctx->duration_ms[i]  = state_duration_ms[i];
-        ctx->duty_pct_cfg[i] = state_duty_pct[i];
+        ctx->duration_ms[i] = state_duration_ms[i];
+        ctx->duty_start[i]  = state_duty_start[i];
+        ctx->duty_end[i]    = state_duty_end[i];
     }
 }
 
@@ -191,7 +203,9 @@ void cmd_execute(ventway_ctx_t *ctx)
             tx_puts(ctx, ": ");
             tx_put_uint(ctx, ctx->duration_ms[i]);
             tx_puts(ctx, "ms duty ");
-            tx_put_uint(ctx, ctx->duty_pct_cfg[i]);
+            tx_put_uint(ctx, ctx->duty_start[i]);
+            tx_puts(ctx, "%->");
+            tx_put_uint(ctx, ctx->duty_end[i]);
             tx_puts(ctx, "%\r\n");
         }
         return;
@@ -221,12 +235,13 @@ void cmd_execute(ventway_ctx_t *ctx)
         return;
     }
 
-    /* "duty inhale 90" — set duty cycle */
+    /* "duty inhale 0 80" — set duty ramp start and end */
     if (str_eq(verb, "duty")) {
-        char *state_arg, *pct_arg;
+        char *state_arg, *start_arg, *end_arg;
         if (!next_token(ctx->cmd_buf, ctx->cmd_len, &pos, &state_arg) ||
-            !next_token(ctx->cmd_buf, ctx->cmd_len, &pos, &pct_arg)) {
-            tx_puts(ctx, "usage: duty <state> <pct>\r\n");
+            !next_token(ctx->cmd_buf, ctx->cmd_len, &pos, &start_arg) ||
+            !next_token(ctx->cmd_buf, ctx->cmd_len, &pos, &end_arg)) {
+            tx_puts(ctx, "usage: duty <state> <start%> <end%>\r\n");
             return;
         }
         state_t dst = parse_state_name(state_arg);
@@ -234,16 +249,20 @@ void cmd_execute(ventway_ctx_t *ctx)
             tx_puts(ctx, "bad state\r\n");
             return;
         }
-        int ok;
-        uint32_t pct = parse_uint(pct_arg, &ok);
-        if (!ok || pct > 100) {
+        int ok1, ok2;
+        uint32_t s_pct = parse_uint(start_arg, &ok1);
+        uint32_t e_pct = parse_uint(end_arg, &ok2);
+        if (!ok1 || !ok2 || s_pct > 100 || e_pct > 100) {
             tx_puts(ctx, "bad value (0-100)\r\n");
             return;
         }
-        ctx->duty_pct_cfg[dst] = pct;
+        ctx->duty_start[dst] = s_pct;
+        ctx->duty_end[dst]   = e_pct;
         tx_puts(ctx, state_names[dst]);
         tx_puts(ctx, " duty = ");
-        tx_put_uint(ctx, pct);
+        tx_put_uint(ctx, s_pct);
+        tx_puts(ctx, "%->");
+        tx_put_uint(ctx, e_pct);
         tx_puts(ctx, "%\r\n");
         return;
     }
@@ -273,7 +292,8 @@ void enter_state(ventway_ctx_t *ctx, state_t s)
 
     ctx->state       = s;
     ctx->state_ticks = ctx->duration_ms[s] / TICK_MS;
-    ctx->duty_pct    = ctx->duty_pct_cfg[s];
+    ctx->state_total_ticks = ctx->state_ticks;
+    ctx->duty_pct          = ctx->duty_start[s];
 
     if (s == INHALE)
         ctx->cycle_count++;
@@ -292,8 +312,21 @@ void state_log(ventway_ctx_t *ctx)
     tx_puts(ctx, "] ");
     tx_puts(ctx, state_names[ctx->state]);
     tx_puts(ctx, " \xe2\x80\x94 duty ");
-    tx_put_uint(ctx, ctx->duty_pct_cfg[ctx->state]);
+    tx_put_uint(ctx, ctx->duty_start[ctx->state]);
+    tx_puts(ctx, "%->");
+    tx_put_uint(ctx, ctx->duty_end[ctx->state]);
     tx_puts(ctx, "%\r\n");
+}
+
+static uint32_t interpolate_duty(uint32_t start, uint32_t end,
+                                  uint32_t elapsed, uint32_t total)
+{
+    if (total == 0)
+        return end;
+    if (end >= start)
+        return start + ((end - start) * elapsed) / total;
+    else
+        return start - ((start - end) * elapsed) / total;
 }
 
 int state_machine_tick(ventway_ctx_t *ctx)
@@ -302,6 +335,10 @@ int state_machine_tick(ventway_ctx_t *ctx)
 
     if (ctx->state_ticks > 0) {
         ctx->state_ticks--;
+        uint32_t elapsed = ctx->state_total_ticks - ctx->state_ticks;
+        ctx->duty_pct = interpolate_duty(
+            ctx->duty_start[ctx->state], ctx->duty_end[ctx->state],
+            elapsed, ctx->state_total_ticks);
         return 0;
     }
 
