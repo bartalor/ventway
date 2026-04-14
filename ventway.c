@@ -367,8 +367,9 @@ void cmd_process_byte(ventway_ctx_t *ctx, char c)
 
 void sensor_read(ventway_ctx_t *ctx)
 {
-    if (ctx->sensor_reg)
-        ctx->pressure = *ctx->sensor_reg;
+    if (!ctx->sensor_reg)
+        for (;;);  /* trap: sensor_reg must be set before use */
+    ctx->pressure = *ctx->sensor_reg;
 }
 
 /* ---- PID controller ----------------------------------------------------- */

@@ -16,6 +16,7 @@
 #include <limits.h>
 
 #include "ventway.h"
+#include "lung_model.h"
 
 /* ---- Minimal test harness ----------------------------------------------- */
 
@@ -328,16 +329,6 @@ TEST(test_sensor_read_from_register)
     ASSERT_EQ(ctx.pressure, sensor_val);
 }
 
-TEST(test_sensor_read_null_register_noop)
-{
-    ventway_ctx_t ctx;
-    ventway_init(&ctx);
-    ctx.pressure = FP_FROM_INT(42);
-    /* sensor_reg is NULL from init */
-    sensor_read(&ctx);
-    ASSERT_EQ(ctx.pressure, FP_FROM_INT(42));  /* unchanged */
-}
-
 TEST(test_sensor_read_updates_each_tick)
 {
     ventway_ctx_t ctx;
@@ -515,65 +506,22 @@ TEST(test_pid_anti_windup)
  * external feedback — the same thing Renode does at runtime.
  */
 
-/* Minimal C lung model for test-side feedback simulation */
-typedef struct {
-    fp16_t volume;
-    fp16_t compliance;
-    fp16_t resistance;
-    fp16_t k_turb;
-    fp16_t peep;
-} test_lung_t;
-
-static void test_lung_init(test_lung_t *lung)
-{
-    lung->compliance = FP_FROM_INT(50);
-    lung->resistance = FP_FROM_INT(5);
-    lung->k_turb     = FP_FROM_INT(10);
-    lung->peep       = FP_FROM_INT(5);
-    lung->volume     = fp_mul(lung->compliance, lung->peep);
-}
-
-static fp16_t test_lung_tick(test_lung_t *lung, uint32_t duty_pct, int is_exhale)
-{
-    fp16_t flow;
-    if (is_exhale) {
-        fp16_t p_elastic = fp_div(lung->volume, lung->compliance);
-        fp16_t p_drive = p_elastic - lung->peep;
-        if (p_drive < 0) p_drive = 0;
-        flow = -(fp_div(p_drive, lung->resistance)) * 1000;
-    } else {
-        flow = fp_mul(lung->k_turb, FP_FROM_INT((int32_t)duty_pct));
-    }
-
-    lung->volume += fp_mul(flow, DT_FP);
-
-    fp16_t min_vol = fp_mul(lung->compliance, lung->peep);
-    if (lung->volume < min_vol)
-        lung->volume = min_vol;
-    fp16_t max_vol = FP_FROM_INT(1000);
-    if (lung->volume > max_vol)
-        lung->volume = max_vol;
-
-    fp16_t p_elastic   = fp_div(lung->volume, lung->compliance);
-    fp16_t p_resistive = fp_mul(lung->resistance, flow) / 1000;
-    fp16_t pressure = p_elastic + p_resistive;
-    if (pressure < 0) pressure = 0;
-    return pressure;
-}
+/* Uses lung_ctx_t / lung_init() / lung_tick() from lung_model.h —
+ * same code that Renode loads as a .so. No duplication. */
 
 TEST(test_closed_loop_reaches_target)
 {
     ventway_ctx_t ctx;
-    test_lung_t lung;
+    lung_ctx_t lung;
     init_with_sensor(&ctx);
-    test_lung_init(&lung);
+    lung_init(&lung);
     enter_state(&ctx, INHALE);
 
     /* Run full closed loop for 2 seconds (200 ticks) */
     for (int i = 0; i < 200; i++) {
         sensor_read(&ctx);
         pid_tick(&ctx);
-        fake_sensor = test_lung_tick(&lung, ctx.duty_pct, 0);
+        fake_sensor = lung_tick(&lung, ctx.duty_pct, 0);
     }
 
     /* Pressure should be near 20 cmH2O target (allow overshoot settling) */
@@ -583,16 +531,16 @@ TEST(test_closed_loop_reaches_target)
 TEST(test_closed_loop_exhale_settles_to_peep)
 {
     ventway_ctx_t ctx;
-    test_lung_t lung;
+    lung_ctx_t lung;
     init_with_sensor(&ctx);
-    test_lung_init(&lung);
+    lung_init(&lung);
 
     /* First fill the lungs */
     enter_state(&ctx, INHALE);
     for (int i = 0; i < 100; i++) {
         sensor_read(&ctx);
         pid_tick(&ctx);
-        fake_sensor = test_lung_tick(&lung, ctx.duty_pct, 0);
+        fake_sensor = lung_tick(&lung, ctx.duty_pct, 0);
     }
 
     /* Now exhale */
@@ -600,7 +548,7 @@ TEST(test_closed_loop_exhale_settles_to_peep)
     for (int i = 0; i < 300; i++) {
         sensor_read(&ctx);
         pid_tick(&ctx);
-        fake_sensor = test_lung_tick(&lung, ctx.duty_pct, 1);
+        fake_sensor = lung_tick(&lung, ctx.duty_pct, 1);
     }
 
     /* Pressure should settle near PEEP (5 cmH2O) */
@@ -924,7 +872,6 @@ int main(void)
 
     printf("\nSensor read:\n");
     RUN(test_sensor_read_from_register);
-    RUN(test_sensor_read_null_register_noop);
     RUN(test_sensor_read_updates_each_tick);
 
     printf("\nenter_state:\n");

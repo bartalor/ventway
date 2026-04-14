@@ -14,7 +14,7 @@ LDFLAGS  = -T linker.ld -nostdlib -Wl,--gc-sections
 SRCS     = startup.c ventway.c main.c
 OBJS     = $(addprefix $(BUILD)/,$(SRCS:.c=.o))
 
-.PHONY: all clean renode test
+.PHONY: all clean renode test sim
 
 all: $(BUILD)/$(TARGET).bin
 	$(SIZE) $(BUILD)/$(TARGET).elf
@@ -37,8 +37,14 @@ clean:
 test: $(BUILD)/test_ventway
 	./$(BUILD)/test_ventway
 
-$(BUILD)/test_ventway: test_ventway.c ventway.c ventway.h | $(BUILD)
-	cc -std=c99 -Wall -Wextra -g -o $@ test_ventway.c ventway.c
+$(BUILD)/test_ventway: test_ventway.c ventway.c ventway.h lung_model.c lung_model.h | $(BUILD)
+	cc -std=c99 -Wall -Wextra -g -o $@ test_ventway.c ventway.c lung_model.c
 
-renode:
+# Shared library for Renode lung model peripheral
+sim: $(BUILD)/lung_model.so
+
+$(BUILD)/lung_model.so: lung_model.c lung_model.h | $(BUILD)
+	cc -std=c99 -Wall -Wextra -O2 -shared -fPIC -o $@ lung_model.c
+
+renode: $(BUILD)/$(TARGET).bin $(BUILD)/lung_model.so
 	renode ventway.resc
