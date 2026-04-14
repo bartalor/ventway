@@ -61,6 +61,17 @@
 #define RCC_APB1ENR_TIM3EN     (1U << 1)
 #define RCC_APB1ENR_USART2EN   (1U << 17)
 
+/* GPIO pin numbers */
+#define PA2                    2
+#define PA6                    6
+
+/* GPIO modes (MODER register) */
+#define GPIO_MODE_AF           2U
+
+/* Alternate function mappings */
+#define GPIO_AF7_USART2        7U
+#define GPIO_AF2_TIM3          2U
+
 /* ---- Global context ----------------------------------------------------- */
 
 static volatile ventway_ctx_t g_ctx;
@@ -83,19 +94,17 @@ static void clock_init(void)
 
 static void gpio_init(void)
 {
-    /* PA2: AF mode */
-    GPIOA_MODER &= ~(3U << (2 * 2));
-    GPIOA_MODER |=  (2U << (2 * 2));
-    /* PA2 AF7 (USART2) — AFRL bits [11:8] */
-    GPIOA_AFRL &= ~(0xFU << (2 * 4));
-    GPIOA_AFRL |=  (7U   << (2 * 4));
+    /* PA2: AF mode for USART2 TX */
+    GPIOA_MODER &= ~(3U << (PA2 * 2));
+    GPIOA_MODER |=  (GPIO_MODE_AF << (PA2 * 2));
+    GPIOA_AFRL  &= ~(0xFU << (PA2 * 4));
+    GPIOA_AFRL  |=  (GPIO_AF7_USART2 << (PA2 * 4));
 
-    /* PA6: AF mode */
-    GPIOA_MODER &= ~(3U << (6 * 2));
-    GPIOA_MODER |=  (2U << (6 * 2));
-    /* PA6 AF2 (TIM3) — AFRL bits [27:24] */
-    GPIOA_AFRL &= ~(0xFU << (6 * 4));
-    GPIOA_AFRL |=  (2U   << (6 * 4));
+    /* PA6: AF mode for TIM3 PWM */
+    GPIOA_MODER &= ~(3U << (PA6 * 2));
+    GPIOA_MODER |=  (GPIO_MODE_AF << (PA6 * 2));
+    GPIOA_AFRL  &= ~(0xFU << (PA6 * 4));
+    GPIOA_AFRL  |=  (GPIO_AF2_TIM3 << (PA6 * 4));
 }
 
 static void usart2_init(void)
