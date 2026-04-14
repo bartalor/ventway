@@ -53,8 +53,9 @@ void ventway_init(ventway_ctx_t *ctx)
     ctx->state      = INHALE;
     ctx->cycle_count = 0;
     ctx->tick_count  = 0;
-    ctx->state_ticks = 0;
-    ctx->duty_pct    = 0;
+    ctx->state_ticks   = 0;
+    ctx->duty_pct      = 0;
+    ctx->state_changed = 0;
 
     for (int i = 0; i < STATE_COUNT; i++) {
         ctx->duration_ms[i]  = state_duration_ms[i];
@@ -277,12 +278,21 @@ void enter_state(ventway_ctx_t *ctx, state_t s)
     if (s == INHALE)
         ctx->cycle_count++;
 
+    ctx->state_changed = 1;
+}
+
+void state_log(ventway_ctx_t *ctx)
+{
+    if (!ctx->state_changed)
+        return;
+    ctx->state_changed = 0;
+
     tx_puts(ctx, "[cycle ");
     tx_put_uint(ctx, ctx->cycle_count);
     tx_puts(ctx, "] ");
-    tx_puts(ctx, state_names[s]);
+    tx_puts(ctx, state_names[ctx->state]);
     tx_puts(ctx, " \xe2\x80\x94 duty ");
-    tx_put_uint(ctx, ctx->duty_pct_cfg[s]);
+    tx_put_uint(ctx, ctx->duty_pct_cfg[ctx->state]);
     tx_puts(ctx, "%\r\n");
 }
 

@@ -173,11 +173,15 @@ int main(void)
     ventway_init((ventway_ctx_t *)&g_ctx);
     tx_puts((ventway_ctx_t *)&g_ctx, "Ventway starting\r\n");
     enter_state((ventway_ctx_t *)&g_ctx, INHALE);
+    state_log((ventway_ctx_t *)&g_ctx);
     pwm_set_duty(g_ctx.duty_pct);
 
     tim2_tick_init();
 
     while (1) {
+        /* Log state transitions (flag set by ISR) */
+        state_log((ventway_ctx_t *)&g_ctx);
+
         /* Process incoming commands */
         char c;
         while (rx_get((ventway_ctx_t *)&g_ctx, &c))

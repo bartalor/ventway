@@ -212,6 +212,7 @@ TEST(test_enter_state_inhale)
     ASSERT_EQ(ctx.state_ticks, 1000 / TICK_MS);
     ASSERT_EQ(ctx.duty_pct, 80);
     ASSERT_EQ(ctx.cycle_count, 1);  /* INHALE increments cycle */
+    ASSERT_EQ(ctx.state_changed, 1);
 }
 
 TEST(test_enter_state_hold)
@@ -238,18 +239,31 @@ TEST(test_enter_state_exhale)
     ASSERT_EQ(ctx.cycle_count, 0);  /* EXHALE does not increment */
 }
 
-TEST(test_enter_state_logs_message)
+TEST(test_state_log_message)
 {
     ventway_ctx_t ctx;
     ventway_init(&ctx);
     enter_state(&ctx, INHALE);
+    state_log(&ctx);
 
+    ASSERT_EQ(ctx.state_changed, 0);  /* flag cleared */
     char out[TX_BUF_SIZE];
     tx_read(&ctx, out, sizeof(out));
     /* Should contain cycle number, state name, and duty */
     ASSERT(strstr(out, "[cycle 1]") != NULL);
     ASSERT(strstr(out, "INHALE") != NULL);
     ASSERT(strstr(out, "80%") != NULL);
+}
+
+TEST(test_state_log_noop_when_no_change)
+{
+    ventway_ctx_t ctx;
+    ventway_init(&ctx);
+    /* No enter_state — flag is 0 */
+    state_log(&ctx);
+    char out[TX_BUF_SIZE];
+    uint32_t n = tx_read(&ctx, out, sizeof(out));
+    ASSERT_EQ(n, 0);
 }
 
 TEST(test_enter_state_invalid_is_noop)
@@ -543,7 +557,8 @@ int main(void)
     RUN(test_enter_state_inhale);
     RUN(test_enter_state_hold);
     RUN(test_enter_state_exhale);
-    RUN(test_enter_state_logs_message);
+    RUN(test_state_log_message);
+    RUN(test_state_log_noop_when_no_change);
     RUN(test_enter_state_invalid_is_noop);
 
     printf("\nState machine ticks:\n");

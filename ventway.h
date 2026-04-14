@@ -58,6 +58,7 @@ typedef struct {
     uint32_t tick_count;
     uint32_t state_ticks;
     uint32_t duty_pct;
+    uint32_t state_changed;  /* flag: ISR sets, main loop clears after logging */
 } ventway_ctx_t;
 
 /* ---- TX buffer API ------------------------------------------------------ */
@@ -81,6 +82,7 @@ void cmd_execute(ventway_ctx_t *ctx);
 /* ---- State machine API -------------------------------------------------- */
 
 void enter_state(ventway_ctx_t *ctx, state_t s);
+void state_log(ventway_ctx_t *ctx);
 int  state_machine_tick(ventway_ctx_t *ctx);
 
 #endif /* VENTWAY_H */
