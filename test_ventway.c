@@ -579,6 +579,43 @@ TEST(test_closed_loop_full_cycle)
     ASSERT_EQ(ctx.cycle_count, 2);
 }
 
+TEST(test_closed_loop_noisy_lung)
+{
+    ventway_ctx_t ctx;
+    lung_ctx_t lung;
+    init_with_sensor(&ctx);
+    lung_init(&lung);
+    lung_set_noise(&lung, 42, 10);  /* ±10% noise on compliance & resistance */
+    enter_state(&ctx, INHALE);
+
+    for (int i = 0; i < 200; i++) {
+        sensor_read(&ctx);
+        pid_tick(&ctx);
+        fake_sensor = lung_tick(&lung, ctx.duty_pct, 0);
+    }
+
+    /* PID should still reach target despite noisy plant */
+    ASSERT_FP_NEAR(ctx.pressure, 20, 5);
+}
+
+TEST(test_noisy_lung_differs_from_clean)
+{
+    lung_ctx_t clean, noisy;
+    lung_init(&clean);
+    lung_init(&noisy);
+    lung_set_noise(&noisy, 123, 10);
+
+    /* Run both with identical duty for 50 ticks */
+    int differs = 0;
+    for (int i = 0; i < 50; i++) {
+        fp16_t p_clean = lung_tick(&clean, 50, 0);
+        fp16_t p_noisy = lung_tick(&noisy, 50, 0);
+        if (p_clean != p_noisy)
+            differs = 1;
+    }
+    ASSERT(differs);  /* noise should produce different pressure values */
+}
+
 /* ---- State machine tick tests ------------------------------------------- */
 
 TEST(test_tick_decrements_state_ticks)
@@ -894,6 +931,8 @@ int main(void)
     RUN(test_closed_loop_reaches_target);
     RUN(test_closed_loop_exhale_settles_to_peep);
     RUN(test_closed_loop_full_cycle);
+    RUN(test_closed_loop_noisy_lung);
+    RUN(test_noisy_lung_differs_from_clean);
 
     printf("\nState machine ticks:\n");
     RUN(test_tick_decrements_state_ticks);
