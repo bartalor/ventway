@@ -40,6 +40,17 @@ const uint32_t state_duty_pct[STATE_COUNT] = {
 
 /* ---- TX ring buffer ----------------------------------------------------- */
 
+/*@ requires \valid(ctx);
+    assigns  ctx->tx_head, ctx->tx_tail, ctx->state, ctx->cycle_count,
+             ctx->tick_count, ctx->state_ticks, ctx->duty_pct;
+    ensures  ctx->tx_head == 0;
+    ensures  ctx->tx_tail == 0;
+    ensures  ctx->state == INHALE;
+    ensures  ctx->cycle_count == 0;
+    ensures  ctx->tick_count == 0;
+    ensures  ctx->state_ticks == 0;
+    ensures  ctx->duty_pct == 0;
+*/
 void ventway_init(ventway_ctx_t *ctx)
 {
     ctx->tx_head    = 0;
@@ -51,6 +62,12 @@ void ventway_init(ventway_ctx_t *ctx)
     ctx->duty_pct    = 0;
 }
 
+/*@ requires \valid(ctx);
+    requires ctx->tx_head < TX_BUF_SIZE;
+    requires ctx->tx_tail < TX_BUF_SIZE;
+    assigns  ctx->tx_buf[0 .. TX_BUF_SIZE - 1], ctx->tx_head;
+    ensures  ctx->tx_head < TX_BUF_SIZE;
+*/
 void tx_put(ventway_ctx_t *ctx, char c)
 {
     uint32_t next = (ctx->tx_head + 1) & (TX_BUF_SIZE - 1);
@@ -60,12 +77,25 @@ void tx_put(ventway_ctx_t *ctx, char c)
     ctx->tx_head = next;
 }
 
+/*@ requires \valid(ctx);
+    requires ctx->tx_head < TX_BUF_SIZE;
+    requires ctx->tx_tail < TX_BUF_SIZE;
+    requires \valid_read(s) && \valid_read(s + (0 .. \block_length(s) - 1));
+    assigns  ctx->tx_buf[0 .. TX_BUF_SIZE - 1], ctx->tx_head;
+    ensures  ctx->tx_head < TX_BUF_SIZE;
+*/
 void tx_puts(ventway_ctx_t *ctx, const char *s)
 {
     while (*s)
         tx_put(ctx, *s++);
 }
 
+/*@ requires \valid(ctx);
+    requires ctx->tx_head < TX_BUF_SIZE;
+    requires ctx->tx_tail < TX_BUF_SIZE;
+    assigns  ctx->tx_buf[0 .. TX_BUF_SIZE - 1], ctx->tx_head;
+    ensures  ctx->tx_head < TX_BUF_SIZE;
+*/
 void tx_put_uint(ventway_ctx_t *ctx, uint32_t n)
 {
     char buf[11];
@@ -76,6 +106,7 @@ void tx_put_uint(ventway_ctx_t *ctx, uint32_t n)
         return;
     }
     while (n > 0) {
+        /*@ assert 0 <= i < 10; */
         buf[i++] = '0' + (char)(n % 10);
         n /= 10;
     }
@@ -83,6 +114,16 @@ void tx_put_uint(ventway_ctx_t *ctx, uint32_t n)
         tx_put(ctx, buf[i]);
 }
 
+/*@ requires \valid(ctx);
+    requires ctx->tx_head < TX_BUF_SIZE;
+    requires ctx->tx_tail < TX_BUF_SIZE;
+    requires max_len > 0;
+    requires \valid(dst + (0 .. max_len - 1));
+    assigns  ctx->tx_tail, dst[0 .. max_len - 1];
+    ensures  ctx->tx_tail < TX_BUF_SIZE;
+    ensures  \result < max_len;
+    ensures  dst[\result] == '\0';
+*/
 uint32_t tx_read(ventway_ctx_t *ctx, char *dst, uint32_t max_len)
 {
     uint32_t n = 0;
@@ -96,6 +137,15 @@ uint32_t tx_read(ventway_ctx_t *ctx, char *dst, uint32_t max_len)
 
 /* ---- State machine ------------------------------------------------------ */
 
+/*@ requires \valid(ctx);
+    requires ctx->tx_head < TX_BUF_SIZE;
+    requires ctx->tx_tail < TX_BUF_SIZE;
+    assigns  ctx->state, ctx->state_ticks, ctx->duty_pct, ctx->cycle_count,
+             ctx->tx_buf[0 .. TX_BUF_SIZE - 1], ctx->tx_head;
+    ensures  ctx->tx_head < TX_BUF_SIZE;
+    ensures  s < STATE_COUNT ==> ctx->state == s;
+    ensures  s < STATE_COUNT ==> ctx->duty_pct == state_duty_pct[s];
+*/
 void enter_state(ventway_ctx_t *ctx, state_t s)
 {
     if (s >= STATE_COUNT)
@@ -117,6 +167,16 @@ void enter_state(ventway_ctx_t *ctx, state_t s)
     tx_puts(ctx, "%\r\n");
 }
 
+/*@ requires \valid(ctx);
+    requires ctx->tx_head < TX_BUF_SIZE;
+    requires ctx->tx_tail < TX_BUF_SIZE;
+    requires ctx->state < STATE_COUNT;
+    assigns  ctx->tick_count, ctx->state_ticks, ctx->state, ctx->duty_pct,
+             ctx->cycle_count, ctx->tx_buf[0 .. TX_BUF_SIZE - 1], ctx->tx_head;
+    ensures  ctx->tx_head < TX_BUF_SIZE;
+    ensures  ctx->state < STATE_COUNT;
+    ensures  \result == 0 || \result == 1;
+*/
 int state_machine_tick(ventway_ctx_t *ctx)
 {
     ctx->tick_count++;
