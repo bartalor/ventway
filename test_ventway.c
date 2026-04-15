@@ -509,6 +509,25 @@ TEST(test_pid_anti_windup)
 /* Uses lung_ctx_t / lung_init() / lung_tick() from lung_model.h —
  * same code that Renode loads as a .so. No duplication. */
 
+/* System parameters (ventilator side, not lung properties) */
+#define K_DRIVE     (FP_ONE / 2)    /* 0.5 cmH2O per %duty */
+#define PEEP_CMHO   FP_FROM_INT(5)  /* 5 cmH2O */
+
+/*
+ * Convert controller output → source pressure for the lung.
+ * Inhale:  p_source = k_drive * duty (floor at elastic recoil)
+ * Exhale:  p_source = PEEP
+ */
+static fp16_t drive_p_source(uint32_t duty_pct, int is_exhale, fp16_t p_lung)
+{
+    if (is_exhale)
+        return PEEP_CMHO;
+    fp16_t p_source = fp_mul(K_DRIVE, FP_FROM_INT((int32_t)duty_pct));
+    if (p_source < p_lung)
+        p_source = p_lung;  /* sealed airway */
+    return p_source;
+}
+
 TEST(test_closed_loop_reaches_target)
 {
     ventway_ctx_t ctx;
@@ -521,7 +540,7 @@ TEST(test_closed_loop_reaches_target)
     for (int i = 0; i < 200; i++) {
         sensor_read(&ctx);
         pid_tick(&ctx);
-        fake_sensor = lung_tick(&lung, ctx.duty_pct, 0);
+        fake_sensor = lung_tick(&lung, drive_p_source(ctx.duty_pct, 0, lung.pressure));
     }
 
     /* Pressure should be near 20 cmH2O target (allow overshoot settling) */
@@ -540,7 +559,7 @@ TEST(test_closed_loop_exhale_settles_to_peep)
     for (int i = 0; i < 100; i++) {
         sensor_read(&ctx);
         pid_tick(&ctx);
-        fake_sensor = lung_tick(&lung, ctx.duty_pct, 0);
+        fake_sensor = lung_tick(&lung, drive_p_source(ctx.duty_pct, 0, lung.pressure));
     }
 
     /* Now exhale */
@@ -548,7 +567,7 @@ TEST(test_closed_loop_exhale_settles_to_peep)
     for (int i = 0; i < 300; i++) {
         sensor_read(&ctx);
         pid_tick(&ctx);
-        fake_sensor = lung_tick(&lung, ctx.duty_pct, 1);
+        fake_sensor = lung_tick(&lung, drive_p_source(ctx.duty_pct, 1, lung.pressure));
     }
 
     /* Pressure should settle near PEEP (5 cmH2O) */
@@ -591,7 +610,7 @@ TEST(test_closed_loop_noisy_lung)
     for (int i = 0; i < 200; i++) {
         sensor_read(&ctx);
         pid_tick(&ctx);
-        fake_sensor = lung_tick(&lung, ctx.duty_pct, 0);
+        fake_sensor = lung_tick(&lung, drive_p_source(ctx.duty_pct, 0, lung.pressure));
     }
 
     /* PID should still reach target despite noisy plant */
@@ -605,11 +624,12 @@ TEST(test_noisy_lung_differs_from_clean)
     lung_init(&noisy);
     lung_set_noise(&noisy, 123, 10);
 
-    /* Run both with identical duty for 50 ticks */
+    /* Run both with identical source pressure for 50 ticks */
+    fp16_t p_src = FP_FROM_INT(25);  /* 25 cmH2O applied */
     int differs = 0;
     for (int i = 0; i < 50; i++) {
-        fp16_t p_clean = lung_tick(&clean, 50, 0);
-        fp16_t p_noisy = lung_tick(&noisy, 50, 0);
+        fp16_t p_clean = lung_tick(&clean, p_src);
+        fp16_t p_noisy = lung_tick(&noisy, p_src);
         if (p_clean != p_noisy)
             differs = 1;
     }

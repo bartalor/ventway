@@ -50,8 +50,8 @@ plot: $(BUILD)/test_lung_plot
 	./$(BUILD)/test_lung_plot > $(BUILD)/lung_data.csv
 	python3 plot_lung.py $(BUILD)/lung_data.csv
 
-$(BUILD)/test_lung_plot: test_lung_plot.c lung_model.c lung_model.h | $(BUILD)
-	cc -std=c99 -Wall -Wextra -g -o $@ test_lung_plot.c lung_model.c
+$(BUILD)/test_lung_plot: test_lung_plot.c lung_model.c lung_model.h ventway.c ventway.h | $(BUILD)
+	cc -std=c99 -Wall -Wextra -g -o $@ test_lung_plot.c lung_model.c ventway.c
 
 renode: $(BUILD)/$(TARGET).bin $(BUILD)/lung_model.so
 	renode ventway.resc

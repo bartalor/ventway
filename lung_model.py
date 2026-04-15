@@ -8,7 +8,7 @@ lung model (loaded from lung_model.so) to close the feedback loop.
 
 This is the "patient" — entirely outside the firmware.
 The physics live in lung_model.c (one implementation, shared with tests).
-This file is just the Renode glue: bus reads → lung_tick() → sensor register.
+This file is the Renode glue: bus reads → compute p_source → lung_tick() → sensor register.
 
 NOTE: This script runs inside Renode's IronPython runtime.
 Renode injects `self` (the peripheral instance) into the
@@ -35,8 +35,6 @@ class LungCtx(ctypes.Structure):
         ("volume",     ctypes.c_int32),
         ("compliance", ctypes.c_int32),
         ("resistance", ctypes.c_int32),
-        ("k_drive",    ctypes.c_int32),
-        ("peep",       ctypes.c_int32),
         ("pressure",   ctypes.c_int32),
         ("noise_seed", ctypes.c_uint32),
         ("noise_pct",  ctypes.c_int32),
@@ -45,13 +43,19 @@ class LungCtx(ctypes.Structure):
 _lib.lung_init.argtypes = [ctypes.POINTER(LungCtx)]
 _lib.lung_init.restype  = None
 
-_lib.lung_tick.argtypes = [ctypes.POINTER(LungCtx), ctypes.c_uint32, ctypes.c_int]
+_lib.lung_tick.argtypes = [ctypes.POINTER(LungCtx), ctypes.c_int32]
 _lib.lung_tick.restype  = ctypes.c_int32
 
 # -- Initialize lung state -------------------------------------------------
 
 _lung = LungCtx()
 _lib.lung_init(ctypes.byref(_lung))
+
+# -- System parameters (ventilator side, not lung properties) --------------
+
+FP_ONE   = 1 << 16
+K_DRIVE  = FP_ONE // 2    # 0.5 cmH2O per %duty → 50 cmH2O at 100%
+PEEP     = 5 * FP_ONE     # 5 cmH2O
 
 # -- TIM3 register addresses (for reading PWM duty) -----------------------
 
@@ -69,10 +73,19 @@ def tick():
     else:
         duty_pct = (ccr1 * 100) // arr
 
-    # Infer exhale from duty == 0 (controller sets duty to 0 on exhale)
-    is_exhale = 1 if duty_pct == 0 else 0
+    # Compute source pressure (ventilator side logic)
+    if duty_pct == 0:
+        # No drive — exhale: source is PEEP
+        p_source = PEEP
+    else:
+        # Inhale: source = k_drive * duty
+        p_source = (K_DRIVE * duty_pct) >> 16
+        # Sealed airway: source never drops below current elastic recoil
+        p_elastic = _lung.pressure  # approximate from last tick
+        if p_source < p_elastic:
+            p_source = p_elastic
 
-    _lib.lung_tick(ctypes.byref(_lung), duty_pct, is_exhale)
+    _lib.lung_tick(ctypes.byref(_lung), p_source)
 
 
 def read(offset, count):

@@ -1,15 +1,14 @@
 /*
- * lung_model.c — Single-compartment lung simulation
+ * lung_model.c — Single-compartment lung simulation (pure RC model)
  *
  * One implementation, two consumers:
  *   - Host tests link this directly
  *   - Renode peripheral loads it as a shared library (lung_model.so)
  *
  * Physics: single-compartment RC model.  P_elastic = V/C.
- * Flow = (P_source - P_elastic) / R  (same ODE for both phases).
- *   Inhale: P_source = k_drive * duty   (ventilator pushes air in)
- *   Exhale: P_source = PEEP             (elastic recoil drives air out)
- * A PEEP valve clamp prevents volume from dropping below C * PEEP.
+ * Flow = (P_source - P_elastic) / R.
+ * The lung receives an applied pressure and responds — it knows
+ * nothing about ventilators, duty cycles, or breath phases.
  */
 
 #include "lung_model.h"
@@ -56,16 +55,17 @@ static fp16_t noise_multiplier(uint32_t *seed, fp16_t pct)
 #define MAX_VOLUME  FP_FROM_INT(1000)            /* 1000 mL safety clamp */
 #define ML_PER_L    1000                         /* mL/s ↔ L/s conversion */
 
+/* Initial volume = C * PEEP_DEFAULT.  Only used by lung_init(). */
+#define PEEP_DEFAULT  FP_FROM_INT(5)
+
 /* ---- API ---------------------------------------------------------------- */
 
 void lung_init(lung_ctx_t *const lung)
 {
     lung->compliance = FP_FROM_INT(50);
     lung->resistance = FP_FROM_INT(5);
-    lung->k_drive    = FP_ONE / 2;              /* 0.5 cmH2O per %duty → 50 cmH2O max */
-    lung->peep       = FP_FROM_INT(5);
-    lung->volume     = fp_mul(lung->compliance, lung->peep);
-    lung->pressure   = lung->peep;
+    lung->volume     = fp_mul(lung->compliance, PEEP_DEFAULT);
+    lung->pressure   = PEEP_DEFAULT;
     lung->noise_seed = 0;
     lung->noise_pct  = 0;
 }
@@ -77,7 +77,7 @@ void lung_set_noise(lung_ctx_t *const lung, uint32_t seed, int pct)
     lung->noise_pct  = FP_FROM_INT(pct);
 }
 
-fp16_t lung_tick(lung_ctx_t *const lung, uint32_t duty_pct, int is_exhale)
+fp16_t lung_tick(lung_ctx_t *const lung, fp16_t p_source)
 {
     /* Apply per-tick noise to compliance and resistance */
     fp16_t C = fp_mul(lung->compliance, noise_multiplier(&lung->noise_seed, lung->noise_pct));
@@ -85,30 +85,16 @@ fp16_t lung_tick(lung_ctx_t *const lung, uint32_t duty_pct, int is_exhale)
     if (C < FP_ONE) C = FP_ONE;   /* clamp to >= 1 mL/cmH2O */
     if (R < FP_ONE) R = FP_ONE;   /* clamp to >= 1 cmH2O/(L/s) */
 
-    /* Unified ODE: flow = (P_source - P_elastic) / R */
+    /* Flow = (P_source - P_elastic) / R */
     fp16_t p_elastic = fp_div(lung->volume, C);
-    fp16_t p_source;
-
-    if (is_exhale) {
-        p_source = lung->peep;
-    } else {
-        p_source = fp_mul(lung->k_drive, FP_FROM_INT((int32_t)duty_pct));
-        /* Airway sealed: source pressure never drops below elastic recoil */
-        if (p_source < p_elastic)
-            p_source = p_elastic;
-    }
-
     fp16_t flow = fp_div(p_source - p_elastic, R) * ML_PER_L;  /* L/s → mL/s */
 
     fp16_t vol_before = lung->volume;
     lung->volume += fp_mul(flow, DT_FP);
 
-    /* PEEP valve: clamp volume so pressure >= PEEP */
-    fp16_t min_vol = fp_mul(C, lung->peep);
-    if (lung->volume < min_vol)
-        lung->volume = min_vol;
-
-    /* Safety clamp */
+    /* Safety clamps */
+    if (lung->volume < 0)
+        lung->volume = 0;
     if (lung->volume > MAX_VOLUME)
         lung->volume = MAX_VOLUME;
 
