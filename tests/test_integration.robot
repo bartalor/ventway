@@ -3,6 +3,9 @@ Documentation       Integration tests — firmware + lung model in Renode.
 ...                 The ventilator and lung are black boxes communicating
 ...                 through a memory-mapped register at 0x50000000.
 ...                 We observe UART output only.
+...
+...                 UART log format:
+...                 [cycle N] STATE — target X cmH2O, P=Y.Z, duty N%
 
 Suite Setup         Setup
 Suite Teardown      Teardown
@@ -20,7 +23,7 @@ Setup
 
 *** Test Cases ***
 Firmware Boots And Enters Inhale
-    [Documentation]     Firmware prints startup message and enters INHALE.
+    [Documentation]     Firmware prints startup banner and first state transition.
     Create Terminal Tester      ${UART}
 
     Start Emulation
@@ -29,8 +32,7 @@ Firmware Boots And Enters Inhale
     Wait For Line On Uart       INHALE                 timeout=2
 
 Ventilator Completes Full Breath Cycle
-    [Documentation]     Firmware transitions through INHALE → HOLD → EXHALE → INHALE.
-    ...                 Each transition is logged on UART with state name and cycle count.
+    [Documentation]     Firmware transitions INHALE → HOLD → EXHALE → INHALE.
     Create Terminal Tester      ${UART}
 
     Start Emulation
@@ -48,23 +50,39 @@ Ventilator Runs Multiple Cycles
 
     Wait For Line On Uart       [cycle 3]              timeout=15
 
-Pressure Reaches Inspiratory Target
-    [Documentation]     At HOLD entry, pressure should be near 20 cmH2O.
-    ...                 The HOLD log line shows the pressure at transition.
+Pressure Near Target At End Of Inhale
+    [Documentation]     At HOLD entry, PID has driven pressure near 20 cmH2O.
+    ...                 Accept 15–25 cmH2O (±5 of target).
     Create Terminal Tester      ${UART}
 
     Start Emulation
 
-    # HOLD follows INHALE — pressure at transition should be near target.
-    # The log line format: [cycle N] HOLD — target 20 cmH2O, P=XX.X, duty N%
-    Wait For Line On Uart       HOLD                   timeout=5
+    # HOLD log line contains the pressure at transition from INHALE
+    Wait For Line On Uart       regex:\\[cycle 1\\] HOLD.*P=(1[5-9]|2[0-5])\\.\\d    timeout=5
 
-Pressure Settles To PEEP During Exhale
-    [Documentation]     After exhale, pressure should be near 5 cmH2O (PEEP).
-    ...                 Check that cycle 2 INHALE entry shows low pressure.
+Pressure Near PEEP After Exhale
+    [Documentation]     At cycle-2 INHALE entry, lungs have just exhaled.
+    ...                 Pressure should be near PEEP (5 cmH2O): accept 2–9 cmH2O.
     Create Terminal Tester      ${UART}
 
     Start Emulation
 
-    # At cycle 2 INHALE, lungs have just exhaled — pressure near PEEP.
-    Wait For Line On Uart       [cycle 2] INHALE       timeout=10
+    Wait For Line On Uart       regex:\\[cycle 2\\] INHALE.*P=[2-9]\\.\\d             timeout=10
+
+Pressure Consistent Across Cycles
+    [Documentation]     HOLD pressure stays near target across multiple cycles.
+    Create Terminal Tester      ${UART}
+
+    Start Emulation
+
+    Wait For Line On Uart       regex:\\[cycle 1\\] HOLD.*P=(1[5-9]|2[0-5])\\.\\d     timeout=5
+    Wait For Line On Uart       regex:\\[cycle 2\\] HOLD.*P=(1[5-9]|2[0-5])\\.\\d     timeout=10
+    Wait For Line On Uart       regex:\\[cycle 3\\] HOLD.*P=(1[5-9]|2[0-5])\\.\\d     timeout=15
+
+Duty Zero During Exhale
+    [Documentation]     Exhale is passive — duty must be 0%.
+    Create Terminal Tester      ${UART}
+
+    Start Emulation
+
+    Wait For Line On Uart       regex:\\[cycle 1\\] EXHALE.*duty 0%                   timeout=5

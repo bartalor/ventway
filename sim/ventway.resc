@@ -1,20 +1,35 @@
 ### Renode script for Ventway ventilator controller + lung model
-### Usage: renode ventway.resc
-###
-### Architecture:
-###   Firmware (ventway.elf) = pure controller — reads pressure sensor, outputs PWM duty
-###   Lung model (lung_model.py) = simulated patient — reads duty, computes pressure
-###   They communicate through memory-mapped registers only, like real hardware.
+### Usage: make renode
+### Requires: make generates build/ventway.repl with resolved paths
 
 using sysbus
 
 mach create "ventway"
 machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
-machine LoadPlatformDescription @sim/ventway.repl
+machine LoadPlatformDescription @build/ventway.repl
 
 sysbus LoadELF @build/ventway.elf
 
-# Show UART2 output in the Renode console
+# Mirror TIM3_CCR1 writes to lung peripheral (offset 0x04) as duty %.
+# Renode's STM32_Timer doesn't preserve CCR1 on readback, so the lung
+# peripheral can't read it directly. The watchpoint captures the actual
+# firmware write and forwards it.
+python """
+from Antmicro.Renode.Peripherals.Bus import Access, SysbusAccessWidth
+bus = monitor.Machine.SystemBus
+TIM3_CCR1 = 0x40000434
+LUNG_DUTY = 0x50000004
+TIM3_ARR  = 999
+
+def forward_duty(cpu, addr, width, value):
+    if value == 0:
+        return  # ignore timer-internal resets; firmware 0 is harmless to skip
+    duty = (value * 100) // TIM3_ARR
+    bus.WriteDoubleWord(LUNG_DUTY, duty)
+
+bus.AddWatchpointHook(TIM3_CCR1, SysbusAccessWidth.DoubleWord, Access.Write, forward_duty)
+"""
+
 showAnalyzer sysbus.usart2
 
 start

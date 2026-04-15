@@ -18,7 +18,15 @@ OBJS     = $(addprefix $(BUILD)/,$(notdir $(SRCS:.c=.o)))
 HOST_CC      = cc
 HOST_CFLAGS  = -std=c99 -Wall -Wextra -g -Iventway -Ilung_model
 
-.PHONY: all clean renode test test-ventway test-lung test-integration sim
+# Renode (override with: make RENODE=/path/to/renode stats)
+RENODE       = ~/renode_portable/renode
+RENODE_TEST  = ~/renode_portable/renode-test
+
+# Absolute paths for Renode (it doesn't resolve relative paths)
+LUNG_PY      = $(CURDIR)/build/lung_peripheral.py
+LUNG_SO      = $(CURDIR)/build/lung_model.so
+
+.PHONY: all clean renode test test-ventway test-lung test-integration sim stats
 
 all: $(BUILD)/$(TARGET).bin
 	$(SIZE) $(BUILD)/$(TARGET).elf
@@ -52,8 +60,8 @@ test-lung: $(BUILD)/lung_test
 $(BUILD)/lung_test: tests/lung_test.c lung_model/lung_model.c lung_model/lung_model.h | $(BUILD)
 	$(HOST_CC) $(HOST_CFLAGS) -o $@ tests/lung_test.c lung_model/lung_model.c
 
-test-integration: $(BUILD)/$(TARGET).elf $(BUILD)/lung_model.so
-	renode-test tests/test_integration.robot
+test-integration: $(BUILD)/$(TARGET).elf $(BUILD)/lung_model.so $(BUILD)/ventway.repl
+	LD_LIBRARY_PATH=$(HOME)/renode_portable:$$LD_LIBRARY_PATH $(RENODE_TEST) tests/test_integration.robot
 
 # Shared library for Renode lung model peripheral
 sim: $(BUILD)/lung_model.so
@@ -61,5 +69,25 @@ sim: $(BUILD)/lung_model.so
 $(BUILD)/lung_model.so: lung_model/lung_model.c lung_model/lung_model.h | $(BUILD)
 	$(HOST_CC) -std=c99 -Wall -Wextra -O2 -shared -fPIC -Ilung_model -o $@ lung_model/lung_model.c
 
-renode: $(BUILD)/$(TARGET).bin $(BUILD)/lung_model.so
-	renode sim/ventway.resc
+# Generate lung_peripheral.py with resolved .so path
+$(BUILD)/lung_peripheral.py: sim/lung_peripheral.py $(BUILD)/lung_model.so | $(BUILD)
+	@sed 's|__LUNG_SO__|$(LUNG_SO)|' $< > $@
+
+# Generate .repl with resolved absolute path to lung_peripheral.py
+$(BUILD)/ventway.repl: $(BUILD)/lung_peripheral.py | $(BUILD)
+	@printf '// Auto-generated -- do not edit\n\npsens: Python.PythonPeripheral @ sysbus 0x50000000\n    size: 0x100\n    initable: true\n    filename: "%s"\n' "$(LUNG_PY)" > $@
+
+stats: $(BUILD)/$(TARGET).elf $(BUILD)/lung_model.so $(BUILD)/lung_baseline $(BUILD)/ventway.repl
+	@echo "=== Lung baseline (no ventilator) ==="
+	./$(BUILD)/lung_baseline
+	@echo ""
+	@echo "=== With ventilator (Renode) ==="
+	LD_LIBRARY_PATH=$(HOME)/renode_portable:$$LD_LIBRARY_PATH $(RENODE) --disable-xwt --console -e '$$uart_log = "$(CURDIR)/build/uart_log.txt"; include @sim/ventway_stats.resc'
+	python3 sim/parse_stats.py $(BUILD)/uart_log.txt
+
+$(BUILD)/lung_baseline: sim/lung_baseline.c lung_model/lung_model.c lung_model/lung_model.h | $(BUILD)
+	$(HOST_CC) $(HOST_CFLAGS) -o $@ sim/lung_baseline.c lung_model/lung_model.c
+
+renode: $(BUILD)/$(TARGET).bin $(BUILD)/lung_model.so $(BUILD)/ventway.repl
+	LD_LIBRARY_PATH=$(HOME)/renode_portable:$$LD_LIBRARY_PATH $(RENODE) sim/ventway.resc
+
