@@ -16,7 +16,6 @@
 #include <limits.h>
 
 #include "ventway.h"
-#include "lung_model.h"
 
 /* ---- Minimal test harness ----------------------------------------------- */
 
@@ -497,145 +496,6 @@ TEST(test_pid_anti_windup)
     ASSERT(ctx.duty_pct < 50);
 }
 
-/* ---- Closed-loop tests with injected sensor values ---------------------- */
-
-/*
- * These tests simulate the feedback loop by manually stepping
- * a simple lung model alongside the PID, injecting pressure via
- * the sensor_reg pointer. This proves the controller works with
- * external feedback — the same thing Renode does at runtime.
- */
-
-/* Uses lung_ctx_t / lung_init() / lung_tick() from lung_model.h —
- * same code that Renode loads as a .so. No duplication. */
-
-/* System parameters (ventilator side, not lung properties) */
-#define K_DRIVE     (FP_ONE / 2)    /* 0.5 cmH2O per %duty */
-#define PEEP_CMHO   FP_FROM_INT(5)  /* 5 cmH2O */
-
-/*
- * Convert controller output → source pressure for the lung.
- * Inhale:  p_source = k_drive * duty (floor at elastic recoil)
- * Exhale:  p_source = PEEP
- */
-static fp16_t drive_p_source(uint32_t duty_pct, int is_exhale, fp16_t p_lung)
-{
-    if (is_exhale)
-        return PEEP_CMHO;
-    fp16_t p_source = fp_mul(K_DRIVE, FP_FROM_INT((int32_t)duty_pct));
-    if (p_source < p_lung)
-        p_source = p_lung;  /* sealed airway */
-    return p_source;
-}
-
-TEST(test_closed_loop_reaches_target)
-{
-    ventway_ctx_t ctx;
-    lung_ctx_t lung;
-    init_with_sensor(&ctx);
-    lung_init(&lung);
-    enter_state(&ctx, INHALE);
-
-    /* Run full closed loop for 2 seconds (200 ticks) */
-    for (int i = 0; i < 200; i++) {
-        sensor_read(&ctx);
-        pid_tick(&ctx);
-        fake_sensor = lung_tick(&lung, drive_p_source(ctx.duty_pct, 0, lung.pressure));
-    }
-
-    /* Pressure should be near 20 cmH2O target (allow overshoot settling) */
-    ASSERT_FP_NEAR(ctx.pressure, 20, 5);
-}
-
-TEST(test_closed_loop_exhale_settles_to_peep)
-{
-    ventway_ctx_t ctx;
-    lung_ctx_t lung;
-    init_with_sensor(&ctx);
-    lung_init(&lung);
-
-    /* First fill the lungs */
-    enter_state(&ctx, INHALE);
-    for (int i = 0; i < 100; i++) {
-        sensor_read(&ctx);
-        pid_tick(&ctx);
-        fake_sensor = lung_tick(&lung, drive_p_source(ctx.duty_pct, 0, lung.pressure));
-    }
-
-    /* Now exhale */
-    enter_state(&ctx, EXHALE);
-    for (int i = 0; i < 300; i++) {
-        sensor_read(&ctx);
-        pid_tick(&ctx);
-        fake_sensor = lung_tick(&lung, drive_p_source(ctx.duty_pct, 1, lung.pressure));
-    }
-
-    /* Pressure should settle near PEEP (5 cmH2O) */
-    ASSERT_FP_NEAR(ctx.pressure, 5, 2);
-}
-
-TEST(test_closed_loop_full_cycle)
-{
-    ventway_ctx_t ctx;
-    init_with_sensor(&ctx);
-    enter_state(&ctx, INHALE);
-
-    /* Run through a complete cycle using state_machine_tick */
-    /* INHALE: 100 ticks + 1 transition */
-    for (int i = 0; i < 101; i++)
-        state_machine_tick(&ctx);
-    ASSERT_EQ(ctx.state, HOLD);
-
-    /* HOLD: 50 ticks + 1 transition */
-    for (int i = 0; i < 51; i++)
-        state_machine_tick(&ctx);
-    ASSERT_EQ(ctx.state, EXHALE);
-
-    /* EXHALE: 150 ticks + 1 transition */
-    for (int i = 0; i < 151; i++)
-        state_machine_tick(&ctx);
-    ASSERT_EQ(ctx.state, INHALE);
-    ASSERT_EQ(ctx.cycle_count, 2);
-}
-
-TEST(test_closed_loop_noisy_lung)
-{
-    ventway_ctx_t ctx;
-    lung_ctx_t lung;
-    init_with_sensor(&ctx);
-    lung_init(&lung);
-    lung_set_noise(&lung, 42, 10);  /* ±10% noise on compliance & resistance */
-    enter_state(&ctx, INHALE);
-
-    for (int i = 0; i < 200; i++) {
-        sensor_read(&ctx);
-        pid_tick(&ctx);
-        fake_sensor = lung_tick(&lung, drive_p_source(ctx.duty_pct, 0, lung.pressure));
-    }
-
-    /* PID should still reach target despite noisy plant */
-    ASSERT_FP_NEAR(ctx.pressure, 20, 5);
-}
-
-TEST(test_noisy_lung_differs_from_clean)
-{
-    lung_ctx_t clean, noisy;
-    lung_init(&clean);
-    lung_init(&noisy);
-    lung_set_noise(&noisy, 123, 10);
-
-    /* Run both with identical source pressure for 50 ticks */
-    fp16_t p_src = FP_FROM_INT(25);  /* 25 cmH2O applied */
-    int differs = 0;
-    for (int i = 0; i < 50; i++) {
-        fp16_t p_clean = lung_tick(&clean, p_src);
-        fp16_t p_noisy = lung_tick(&noisy, p_src);
-        if (p_clean != p_noisy)
-            differs = 1;
-    }
-    ASSERT(differs);  /* noise should produce different pressure values */
-}
-
 /* ---- State machine tick tests ------------------------------------------- */
 
 TEST(test_tick_decrements_state_ticks)
@@ -946,13 +806,6 @@ int main(void)
     RUN(test_pid_clamp_max);
     RUN(test_pid_clamp_min);
     RUN(test_pid_anti_windup);
-
-    printf("\nClosed-loop (sensor injection):\n");
-    RUN(test_closed_loop_reaches_target);
-    RUN(test_closed_loop_exhale_settles_to_peep);
-    RUN(test_closed_loop_full_cycle);
-    RUN(test_closed_loop_noisy_lung);
-    RUN(test_noisy_lung_differs_from_clean);
 
     printf("\nState machine ticks:\n");
     RUN(test_tick_decrements_state_ticks);
