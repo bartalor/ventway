@@ -109,7 +109,7 @@ fp16_t lung_tick(lung_ctx_t *const lung, uint32_t duty_pct, int is_exhale)
     if (lung->volume > MAX_VOLUME)
         lung->volume = MAX_VOLUME;
 
-    /* Airway pressure: P = V/C + R*flow/1000 */
+    /* Airway pressure: P = V/C + R*flow/ML_PER_L */
     fp16_t p_elastic   = fp_div(lung->volume, C);
     fp16_t p_resistive = fp_mul(R, flow) / ML_PER_L;  /* mL/s → L/s */
     lung->pressure = p_elastic + p_resistive;
