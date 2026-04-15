@@ -18,7 +18,7 @@
 #define T_BREATH   (T_INHALE + T_HOLD + T_EXHALE)
 
 #define N_BREATHS  3
-#define DUTY_PCT   40   /* turbine duty during inhale */
+#define DUTY_PCT   40   /* drive duty during inhale */
 
 static double fp_to_double(fp16_t x)
 {

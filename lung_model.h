@@ -28,7 +28,7 @@ typedef struct {
     fp16_t volume;       /* lung volume, mL (Q16.16) */
     fp16_t compliance;   /* mL/cmH2O (Q16.16) */
     fp16_t resistance;   /* cmH2O/(L/s) (Q16.16) */
-    fp16_t k_turb;       /* flow gain: (mL/s) per %duty (Q16.16) */
+    fp16_t k_drive;      /* source pressure gain: cmH2O per %duty (Q16.16) */
     fp16_t peep;         /* PEEP pressure target, cmH2O (Q16.16) */
     fp16_t pressure;     /* last computed airway pressure (Q16.16) */
     uint32_t noise_seed; /* PRNG state (0 = noise disabled) */
@@ -41,7 +41,7 @@ typedef struct {
  * Initialize lung with physiological defaults.
  *   compliance = 50 mL/cmH2O
  *   resistance = 5 cmH2O/(L/s)
- *   k_turb     = 10 (mL/s) per %duty
+ *   k_drive    = 0.5 cmH2O per %duty (50 cmH2O at full drive)
  *   PEEP       = 5 cmH2O
  *   volume     = C * PEEP (functional residual capacity)
  */
@@ -49,7 +49,7 @@ void lung_init(lung_ctx_t *lung);
 
 /*
  * Advance the lung model by one 10ms tick.
- *   duty_pct:   turbine duty cycle 0–100 (from PWM output)
+ *   duty_pct:   drive duty cycle 0–100 (from PWM output)
  *   is_exhale:  nonzero if passive exhale phase (duty should be 0)
  *
  * Returns airway pressure in Q16.16 cmH2O.

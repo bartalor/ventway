@@ -5,9 +5,10 @@
  *   - Host tests link this directly
  *   - Renode peripheral loads it as a shared library (lung_model.so)
  *
- * Physics: V/C gives elastic pressure, R*flow gives resistive pressure.
- * During active phases the turbine drives flow proportional to duty;
- * during exhale, elastic recoil above PEEP drives passive expiration.
+ * Physics: single-compartment RC model.  P_elastic = V/C.
+ * Flow = (P_source - P_elastic) / R  (same ODE for both phases).
+ *   Inhale: P_source = k_drive * duty   (ventilator pushes air in)
+ *   Exhale: P_source = PEEP             (elastic recoil drives air out)
  * A PEEP valve clamp prevents volume from dropping below C * PEEP.
  */
 
@@ -61,7 +62,7 @@ void lung_init(lung_ctx_t *const lung)
 {
     lung->compliance = FP_FROM_INT(50);
     lung->resistance = FP_FROM_INT(5);
-    lung->k_turb     = FP_FROM_INT(10);
+    lung->k_drive    = FP_ONE / 2;              /* 0.5 cmH2O per %duty → 50 cmH2O max */
     lung->peep       = FP_FROM_INT(5);
     lung->volume     = fp_mul(lung->compliance, lung->peep);
     lung->pressure   = lung->peep;
@@ -84,20 +85,22 @@ fp16_t lung_tick(lung_ctx_t *const lung, uint32_t duty_pct, int is_exhale)
     if (C < FP_ONE) C = FP_ONE;   /* clamp to >= 1 mL/cmH2O */
     if (R < FP_ONE) R = FP_ONE;   /* clamp to >= 1 cmH2O/(L/s) */
 
-    fp16_t flow;
+    /* Unified ODE: flow = (P_source - P_elastic) / R */
+    fp16_t p_elastic = fp_div(lung->volume, C);
+    fp16_t p_source;
 
     if (is_exhale) {
-        /* Passive exhale: flow driven by pressure above PEEP */
-        fp16_t p_elastic = fp_div(lung->volume, C);
-        fp16_t p_drive = p_elastic - lung->peep;
-        if (p_drive < 0)
-            p_drive = 0;
-        flow = -fp_div(p_drive, R) * ML_PER_L;  /* L/s → mL/s */
+        p_source = lung->peep;
     } else {
-        /* Active: turbine drives flow = k_turb * duty */
-        flow = fp_mul(lung->k_turb, FP_FROM_INT((int32_t)duty_pct));
+        p_source = fp_mul(lung->k_drive, FP_FROM_INT((int32_t)duty_pct));
+        /* Airway sealed: source pressure never drops below elastic recoil */
+        if (p_source < p_elastic)
+            p_source = p_elastic;
     }
 
+    fp16_t flow = fp_div(p_source - p_elastic, R) * ML_PER_L;  /* L/s → mL/s */
+
+    fp16_t vol_before = lung->volume;
     lung->volume += fp_mul(flow, DT_FP);
 
     /* PEEP valve: clamp volume so pressure >= PEEP */
@@ -109,10 +112,13 @@ fp16_t lung_tick(lung_ctx_t *const lung, uint32_t duty_pct, int is_exhale)
     if (lung->volume > MAX_VOLUME)
         lung->volume = MAX_VOLUME;
 
-    /* Airway pressure: P = V/C + R*flow/ML_PER_L */
-    fp16_t p_elastic   = fp_div(lung->volume, C);
-    fp16_t p_resistive = fp_mul(R, flow) / ML_PER_L;  /* mL/s → L/s */
-    lung->pressure = p_elastic + p_resistive;
+    /* Effective flow after clamps (for resistive pressure) */
+    fp16_t eff_flow = fp_div(lung->volume - vol_before, DT_FP);
+
+    /* Airway pressure: P = V/C + R*eff_flow/ML_PER_L */
+    fp16_t p_el_final  = fp_div(lung->volume, C);
+    fp16_t p_resistive = fp_mul(R, eff_flow) / ML_PER_L;  /* mL/s → L/s */
+    lung->pressure = p_el_final + p_resistive;
     if (lung->pressure < 0)
         lung->pressure = 0;
 

@@ -35,7 +35,7 @@ class LungCtx(ctypes.Structure):
         ("volume",     ctypes.c_int32),
         ("compliance", ctypes.c_int32),
         ("resistance", ctypes.c_int32),
-        ("k_turb",     ctypes.c_int32),
+        ("k_drive",    ctypes.c_int32),
         ("peep",       ctypes.c_int32),
         ("pressure",   ctypes.c_int32),
         ("noise_seed", ctypes.c_uint32),
