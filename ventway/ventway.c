@@ -397,16 +397,14 @@ void pid_tick(ventway_ctx_t *ctx)
     fp16_t output = p_term + ctx->pid_integral + d_term;
 
     /* Clamp to 0–100% */
-    fp16_t duty_max = FP_FROM_INT(100);
     fp16_t output_sat = output;
-    if (output_sat > duty_max) output_sat = duty_max;
+    if (output_sat > DUTY_MAX_PCT) output_sat = DUTY_MAX_PCT;
     if (output_sat < 0)        output_sat = 0;
 
     /* Anti-windup: back-calculation, with leaky integrator (alpha=0.998)
      * so recent errors carry more weight than old ones. */
     fp16_t sat_diff = output_sat - output;
-    fp16_t alpha = (fp16_t)((998L * FP_ONE) / 1000);  /* 0.998 in Q16.16 */
-    ctx->pid_integral = fp_mul(alpha, ctx->pid_integral)
+    ctx->pid_integral = fp_mul(PID_ALPHA, ctx->pid_integral)
                       + fp_mul(ctx->ki, fp_mul(error, DT_FP))
                       + fp_mul(ctx->kb, fp_mul(sat_diff, DT_FP));
 

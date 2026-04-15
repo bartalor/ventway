@@ -17,6 +17,8 @@
 #define TX_BUF_SIZE     256U  /* must be power of 2 */
 #define RX_BUF_SIZE     64U   /* must be power of 2 */
 #define CMD_BUF_SIZE    64U
+#define DUTY_MAX_PCT    FP_FROM_INT(100)
+#define PID_ALPHA       ((fp16_t)((998L * FP_ONE) / 1000))  /* 0.998 leaky integrator */
 
 /* ---- Fixed-point Q16.16 ------------------------------------------------- */
 
