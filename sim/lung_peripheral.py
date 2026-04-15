@@ -6,9 +6,10 @@ The firmware reads pressure from offset 0x00 (Q16.16 cmH2O).
 The peripheral reads TIM3 PWM duty from the bus and runs the
 lung model (loaded from lung_model.so) to close the feedback loop.
 
-This is the "patient" — entirely outside the firmware.
-The physics live in lung_model.c (one implementation, shared with tests).
-This file is the Renode glue: bus reads → compute p_source → lung_tick() → sensor register.
+This is the Renode integration layer: it wires the two black boxes
+(firmware and lung model) together through memory-mapped registers.
+It uses only the lung model's public C API (lung_init, lung_tick)
+via the built .so artifact.
 
 NOTE: This script runs inside Renode's IronPython runtime.
 Renode injects `self` (the peripheral instance) into the
@@ -20,7 +21,6 @@ Pylance/mypy cannot resolve this; that is expected.
 
 import ctypes
 import os
-import struct
 
 # -- Load the shared library ------------------------------------------------
 
@@ -28,7 +28,7 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 _lib_path = os.path.join(_script_dir, "..", "build", "lung_model.so")
 _lib = ctypes.CDLL(_lib_path)
 
-# -- ctypes declarations matching lung_model.h -----------------------------
+# -- ctypes declarations matching lung_model.so public ABI ----------------
 
 class LungCtx(ctypes.Structure):
     _fields_ = [
@@ -54,7 +54,7 @@ _lib.lung_init(ctypes.byref(_lung))
 # -- System parameters (ventilator side, not lung properties) --------------
 
 FP_ONE   = 1 << 16
-K_DRIVE  = FP_ONE // 2    # 0.5 cmH2O per %duty → 50 cmH2O at 100%
+K_DRIVE  = FP_ONE // 2    # 0.5 cmH2O per %duty -> 50 cmH2O at 100%
 PEEP     = 5 * FP_ONE     # 5 cmH2O
 
 # -- TIM3 register addresses (for reading PWM duty) -----------------------
