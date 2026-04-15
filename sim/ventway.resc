@@ -10,7 +10,7 @@ using sysbus
 
 mach create "ventway"
 machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
-machine LoadPlatformDescription @ventway.repl
+machine LoadPlatformDescription @sim/ventway.repl
 
 sysbus LoadELF @build/ventway.elf
 

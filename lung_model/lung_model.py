@@ -25,7 +25,7 @@ import struct
 # -- Load the shared library ------------------------------------------------
 
 _script_dir = os.path.dirname(os.path.abspath(__file__))
-_lib_path = os.path.join(_script_dir, "build", "lung_model.so")
+_lib_path = os.path.join(_script_dir, "..", "build", "lung_model.so")
 _lib = ctypes.CDLL(_lib_path)
 
 # -- ctypes declarations matching lung_model.h -----------------------------
