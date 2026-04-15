@@ -421,13 +421,10 @@ void enter_state(ventway_ctx_t *ctx, state_t s)
     ctx->state       = s;
     ctx->state_ticks = ctx->duration_ms[s] / TICK_MS;
 
-    /* PID transition handling */
-    ctx->pid_prev_meas = ctx->pressure;  /* avoid derivative kick */
-
     if (s == EXHALE) {
-        /* Exhale is passive — reset integrator so duty drops immediately */
-        ctx->pid_integral = 0;
-        ctx->duty_pct     = 0;
+        ctx->pid_prev_meas = ctx->pressure;  /* avoid derivative kick */
+        ctx->pid_integral  = 0;
+        ctx->duty_pct      = 0;
     }
 
     if (s == INHALE)
