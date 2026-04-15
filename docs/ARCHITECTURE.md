@@ -1,68 +1,8 @@
 # Ventway Architecture
 
-## 1. Register Init — What Each Config Does
+Register init details are in [REGISTER_CONFIG.md](REGISTER_CONFIG.md).
 
-### `clock_init()`
-Turn on power to the peripherals we need. On STM32, peripherals are off by default to save power — you have to explicitly enable each one's clock before you can use it.
-
-```
-RCC_AHB1ENR |= GPIOAEN     — Power on GPIO port A (we need pins PA2 and PA6)
-RCC_APB1ENR |= TIM2EN       — Power on Timer 2 (our 10ms heartbeat that drives the control loop)
-           |  TIM3EN        — Power on Timer 3 (generates the PWM signal that controls turbine speed)
-           |  USART2EN      — Power on UART 2 (serial port for logging and commands)
-```
-
-### `gpio_init()`
-Pins are general-purpose by default. We reassign them to their specific peripheral functions.
-
-```
-PA2 -> USART2 TX    — This pin becomes the serial transmit line (AF7)
-PA6 -> TIM3 CH1     — This pin becomes the PWM output that drives the turbine motor (AF2)
-```
-
-Each pin needs two settings: mode = "alternate function" (not GPIO), and which alternate function number (the AF mux).
-
-### `usart2_init()`
-Set up the serial port for logging state transitions and receiving commands.
-
-```
-BRR = 16MHz / 115200   — Baud rate divider. 16MHz system clock / 115200 baud
-CR1 = UE | TE | RE | RXNEIE
-       UE     — Turn on the UART
-       TE     — Enable transmitting
-       RE     — Enable receiving
-       RXNEIE — Fire an interrupt when a byte arrives (so we don't have to poll)
-NVIC: enable IRQ 38    — Tell the CPU to actually deliver USART2 interrupts
-```
-
-### `tim3_pwm_init()`
-Generate a PWM signal on PA6 to control turbine speed. Duty cycle = how fast the turbine spins.
-
-```
-PSC = 15         — Prescaler: 16MHz / 16 = 1MHz timer clock
-ARR = 999        — Count 0->999, so PWM frequency = 1MHz / 1000 = 1kHz
-CCR1 = 0         — Start with 0% duty (turbine off)
-CCMR1 = PWM mode 1, preload enabled  — Output high while counter < CCR1, low after
-CCER = output enable                  — Actually connect the timer to the pin
-CR1 = enable                          — Start counting
-```
-
-Duty control: writing `CCR1 = 500` means high for 500/1000 of the cycle = 50% duty.
-
-### `tim2_tick_init()`
-Generate a periodic interrupt every 10ms — the heartbeat of the entire system. Every tick: read sensor, run PID, update state machine.
-
-```
-PSC = 15999      — Prescaler: 16MHz / 16000 = 1kHz timer clock
-ARR = 9          — Count 0->9, so interrupt fires every 10 counts = 10ms
-DIER = UIE       — Fire interrupt on counter overflow
-NVIC: enable IRQ 28  — Tell CPU to deliver TIM2 interrupts
-CR1 = enable     — Start counting (this is the last init call — the system is now live)
-```
-
----
-
-## 2. Program Flow
+## 1. Program Flow
 
 ```
 main()
@@ -96,7 +36,7 @@ INHALE (1.0s) -> HOLD (0.5s) -> EXHALE (1.5s) -> INHALE ...
 
 ---
 
-## 3. Race Condition Avoidance
+## 2. Race Condition Avoidance
 
 The ISR and main loop share `g_ctx`. Three techniques prevent races:
 
@@ -110,7 +50,7 @@ The ISR and main loop share `g_ctx`. Three techniques prevent races:
 
 ---
 
-## 4. Integration Testing Architecture
+## 3. Integration Testing Architecture
 
 ### Three modules, strict boundaries
 
