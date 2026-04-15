@@ -50,13 +50,14 @@ static fp16_t noise_multiplier(uint32_t *seed, fp16_t pct)
     return FP_ONE + fp_div(offset, FP_FROM_INT(100));
 }
 
-/* dt = 10ms = 0.01s in Q16.16 */
-#define DT_FP       (FP_ONE / 100)
-#define MAX_VOLUME  FP_FROM_INT(1000)   /* 1000 mL safety clamp */
+/* dt = 10ms = 0.01s in Q16.16.  Exact: 65536/100 = 655.36; round to nearest. */
+#define DT_FP       ((FP_ONE + 50) / 100)       /* 656 ≈ 0.01001 */
+#define MAX_VOLUME  FP_FROM_INT(1000)            /* 1000 mL safety clamp */
+#define ML_PER_L    1000                         /* mL/s ↔ L/s conversion */
 
 /* ---- API ---------------------------------------------------------------- */
 
-void lung_init(lung_ctx_t *lung)
+void lung_init(lung_ctx_t *const lung)
 {
     lung->compliance = FP_FROM_INT(50);
     lung->resistance = FP_FROM_INT(5);
@@ -68,13 +69,14 @@ void lung_init(lung_ctx_t *lung)
     lung->noise_pct  = 0;
 }
 
-void lung_set_noise(lung_ctx_t *lung, uint32_t seed, int pct)
+void lung_set_noise(lung_ctx_t *const lung, uint32_t seed, int pct)
 {
+    if (pct < 0) pct = 0;  /* reject negative — clamp to disabled */
     lung->noise_seed = seed;
-    lung->noise_pct  = FP_FROM_INT(pct < 0 ? -pct : pct);
+    lung->noise_pct  = FP_FROM_INT(pct);
 }
 
-fp16_t lung_tick(lung_ctx_t *lung, uint32_t duty_pct, int is_exhale)
+fp16_t lung_tick(lung_ctx_t *const lung, uint32_t duty_pct, int is_exhale)
 {
     /* Apply per-tick noise to compliance and resistance */
     fp16_t C = fp_mul(lung->compliance, noise_multiplier(&lung->noise_seed, lung->noise_pct));
@@ -90,7 +92,7 @@ fp16_t lung_tick(lung_ctx_t *lung, uint32_t duty_pct, int is_exhale)
         fp16_t p_drive = p_elastic - lung->peep;
         if (p_drive < 0)
             p_drive = 0;
-        flow = -fp_div(p_drive, R) * 1000;
+        flow = -fp_div(p_drive, R) * ML_PER_L;  /* L/s → mL/s */
     } else {
         /* Active: turbine drives flow = k_turb * duty */
         flow = fp_mul(lung->k_turb, FP_FROM_INT((int32_t)duty_pct));
@@ -109,7 +111,7 @@ fp16_t lung_tick(lung_ctx_t *lung, uint32_t duty_pct, int is_exhale)
 
     /* Airway pressure: P = V/C + R*flow/1000 */
     fp16_t p_elastic   = fp_div(lung->volume, C);
-    fp16_t p_resistive = fp_mul(R, flow) / 1000;
+    fp16_t p_resistive = fp_mul(R, flow) / ML_PER_L;  /* mL/s → L/s */
     lung->pressure = p_elastic + p_resistive;
     if (lung->pressure < 0)
         lung->pressure = 0;

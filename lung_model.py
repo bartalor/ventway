@@ -38,6 +38,8 @@ class LungCtx(ctypes.Structure):
         ("k_turb",     ctypes.c_int32),
         ("peep",       ctypes.c_int32),
         ("pressure",   ctypes.c_int32),
+        ("noise_seed", ctypes.c_uint32),
+        ("noise_pct",  ctypes.c_int32),
     ]
 
 _lib.lung_init.argtypes = [ctypes.POINTER(LungCtx)]
