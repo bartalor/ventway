@@ -26,7 +26,7 @@ RENODE_TEST  = ~/renode_portable/renode-test
 LUNG_PY      = $(CURDIR)/build/lung_peripheral.py
 LUNG_SO      = $(CURDIR)/build/lung_model.so
 
-.PHONY: all clean renode test test-ventway test-lung test-integration sim stats
+.PHONY: all clean renode test test-ventway test-lung test-integration sim stats debug-exhale
 
 all: $(BUILD)/$(TARGET).bin
 	$(SIZE) $(BUILD)/$(TARGET).elf
@@ -91,4 +91,15 @@ $(BUILD)/lung_baseline: sim/lung_baseline.c lung_model/lung_model.c lung_model/l
 
 renode: $(BUILD)/$(TARGET).bin $(BUILD)/lung_model.so $(BUILD)/ventway.repl
 	LD_LIBRARY_PATH=$(HOME)/renode_portable:$$LD_LIBRARY_PATH $(RENODE) sim/ventway.resc
+
+# Headless GDB-driven diagnostic. Starts Renode with the GDB server enabled,
+# runs the Python diagnostic, then shuts everything down.
+debug-exhale: $(BUILD)/$(TARGET).elf $(BUILD)/lung_model.so $(BUILD)/ventway.repl
+	@LD_LIBRARY_PATH=$(HOME)/renode_portable:$$LD_LIBRARY_PATH $(RENODE) \
+	    --disable-xwt --console --hide-monitor --hide-log \
+	    -e "include @$(CURDIR)/sim/ventway.resc; machine StartGdbServer 3333" \
+	    > /tmp/renode-debug.log 2>&1 & echo $$! > /tmp/renode-debug.pid
+	@until ss -tln 2>/dev/null | grep -q ':3333'; do sleep 0.1; done
+	-gdb-multiarch -batch -x debug/exhale_diagnostic.py $(BUILD)/$(TARGET).elf
+	@kill $$(cat /tmp/renode-debug.pid) 2>/dev/null; rm -f /tmp/renode-debug.pid
 
