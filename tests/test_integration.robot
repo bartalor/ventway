@@ -14,7 +14,7 @@ Test Teardown       Test Teardown
 Resource            ${RENODEKEYWORDS}
 
 *** Variables ***
-${RESC}             ${CURDIR}/../sim/ventway_test.resc
+${RESC}             ${CURDIR}/test_integration.resc
 ${UART}             sysbus.usart2
 
 *** Keywords ***
