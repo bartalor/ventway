@@ -61,7 +61,8 @@ $(BUILD)/lung_test: tests/lung_test.c lung_model/lung_model.c lung_model/lung_mo
 	$(HOST_CC) $(HOST_CFLAGS) -o $@ tests/lung_test.c lung_model/lung_model.c
 
 test-integration: $(BUILD)/$(TARGET).elf $(BUILD)/lung_model.so $(BUILD)/ventway.repl
-	LD_LIBRARY_PATH=$(HOME)/renode_portable:$$LD_LIBRARY_PATH $(RENODE_TEST) tests/test_integration.robot
+	@mkdir -p test-results/integration
+	LD_LIBRARY_PATH=$(HOME)/renode_portable:$$LD_LIBRARY_PATH $(RENODE_TEST) -r test-results/integration tests/test_integration.robot
 
 # Shared library for Renode lung model peripheral
 sim: $(BUILD)/lung_model.so
