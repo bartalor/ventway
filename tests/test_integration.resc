@@ -6,9 +6,9 @@ using sysbus
 
 mach create "ventway"
 machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
-machine LoadPlatformDescription @build/ventway.repl
+machine LoadPlatformDescription $root/build/ventway.repl
 
-sysbus LoadELF @build/ventway.elf
+sysbus LoadELF $root/build/ventway.elf
 
 # Mirror TIM3_CCR1 writes to lung peripheral (offset 0x04) as duty %.
 python """

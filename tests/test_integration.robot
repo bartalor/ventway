@@ -11,10 +11,12 @@ Test Setup          Create Machine
 
 *** Variables ***
 ${RESC}             ${CURDIR}/test_integration.resc
+${ROOT}             ${CURDIR}/..
 ${UART}             sysbus.usart2
 
 *** Keywords ***
 Create Machine
+    Execute Command             $root = @${ROOT}
     Execute Command             include @${RESC}
 
 *** Test Cases ***
