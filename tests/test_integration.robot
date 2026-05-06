@@ -7,18 +7,14 @@ Documentation       Integration tests — firmware + lung model in Renode.
 ...                 UART log format:
 ...                 [cycle N] STATE — target X cmH2O, P=Y.Z, duty N%
 
-Suite Setup         Setup
-Suite Teardown      Teardown
-Test Teardown       Test Teardown
-
-Resource            ${RENODEKEYWORDS}
+Test Setup          Create Machine
 
 *** Variables ***
 ${RESC}             ${CURDIR}/test_integration.resc
 ${UART}             sysbus.usart2
 
 *** Keywords ***
-Setup
+Create Machine
     Execute Command             include @${RESC}
 
 *** Test Cases ***
