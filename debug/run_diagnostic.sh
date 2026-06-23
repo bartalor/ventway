@@ -29,8 +29,8 @@ trap cleanup EXIT INT TERM
 
 LD_LIBRARY_PATH="$HOME/renode_portable:${LD_LIBRARY_PATH:-}" "$RENODE" \
     --disable-xwt --console --hide-log \
-    -e "include @${RESC}; machine StartGdbServer 3333" \
-    > "$LOG" 2>&1 &
+    -e "include @${RESC}; mach set \"ventway\"; machine StartGdbServer 3333" \
+    < /dev/null > "$LOG" 2>&1 &
 echo $! > "$PIDF"
 
 for _ in $(seq 1 100); do
@@ -51,4 +51,13 @@ if ! ss -tln 2>/dev/null | grep -q ':3333'; then
     exit 1
 fi
 
+set +e
 gdb-multiarch -batch -x "$GDB_SCRIPT" "$ELF"
+gdb_status=$?
+set -e
+
+if [ $gdb_status -ne 0 ]; then
+    echo "--- gdb exited $gdb_status; renode log: ---" >&2
+    cat "$LOG" >&2
+fi
+exit $gdb_status
